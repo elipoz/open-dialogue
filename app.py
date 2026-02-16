@@ -74,6 +74,8 @@ def init_session_state():
         st.session_state.dialogue = []  # list of (party, content, timestamp)
     if "send_as_radio" not in st.session_state:
         st.session_state.send_as_radio = "Moderator"
+    if "send_as_radio_prev" not in st.session_state:
+        st.session_state.send_as_radio_prev = st.session_state.send_as_radio
     if "dialogue_newest_first" not in st.session_state:
         st.session_state.dialogue_newest_first = True  # True = newest first, False = chronological
     # Store only role text (no name); name stays fixed from constants
@@ -89,6 +91,8 @@ def init_session_state():
         st.session_state.agent1_thinking = False  # True between button click and API finish (spinner in middle column)
     if "agent2_thinking" not in st.session_state:
         st.session_state.agent2_thinking = False
+    if "pending_mention_agents" not in st.session_state:
+        st.session_state.pending_mention_agents = []  # queue of agent_key when replying via @mention (same spinner location as Respond)
 
 
 def _get_agent_role(agent_key: str) -> str:
@@ -133,20 +137,9 @@ def _agent_has_spoken(speaker: str) -> bool:
     return any(entry[0] == speaker for entry in st.session_state.dialogue)
 
 
-def _render_agent_respond_button(agent_key: str, name: str, spin_col, btn_col) -> None:
-    """Render spinner in middle column (between role and button), then Respond button. Same for both agents."""
+def _render_agent_respond_button(agent_key: str, btn_col) -> None:
+    """Render Respond button; on click set thinking flag and rerun (spinner shown below agent rows)."""
     thinking_key = "agent1_thinking" if agent_key == "agent1" else "agent2_thinking"
-    with spin_col:
-        if st.session_state.get(thinking_key, False):
-            with st.spinner(f"{name} thinking…"):
-                reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
-            st.session_state.dialogue.append((agent_key, reply, datetime.now()))
-            st.session_state[thinking_key] = False
-            if agent_key == "agent1":
-                st.session_state.agent1_needs_intro = False
-            elif agent_key == "agent2":
-                st.session_state.agent2_needs_intro = False
-            st.rerun()
     with btn_col:
         if st.button("Respond", key=f"gen_{agent_key}"):
             st.session_state[thinking_key] = True
@@ -268,7 +261,19 @@ def main():
 
     init_session_state()
 
-    left_col, right_col = st.columns([6, 4])  # 60% left, 40% Conversation history
+    # CSS: force thinking spinner to be left-aligned (Streamlit often right-aligns it in columns)
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSpinner"] { margin-right: auto !important; text-align: left !important; }
+        [data-testid="stSpinner"] * { text-align: left !important; }
+        div:has([data-testid="stSpinner"]) { justify-content: flex-start !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history
 
     with left_col:
         # Human message: choose role, type and press Enter (no Send button)
@@ -279,12 +284,35 @@ def main():
             key="send_as_radio",
             label_visibility="collapsed",
         )
-        human_prompt = st.chat_input("Type a message and press Enter to send")
+        # When user changes Moderator/Instructor, focus the chat input on next run
+        _current_radio = st.session_state.get("send_as_radio", "Moderator")
+        _prev_radio = st.session_state.get("send_as_radio_prev", _current_radio)
+        if _current_radio != _prev_radio:
+            st.session_state.focus_chat_input = True
+            st.session_state.send_as_radio_prev = _current_radio
+        # Same width for all three; each Respond button on the same row as its agent
+        row0_col1, row0_col2 = st.columns([5, 1])
+        with row0_col1:
+            human_prompt = st.chat_input("Type a message and press Enter to send")
+        # Move focus to chat input after selecting Moderator/Instructor
+        if st.session_state.get("focus_chat_input", False):
+            st.session_state.focus_chat_input = False
+            st.markdown(
+                """
+                <script>
+                (function() {
+                    setTimeout(function() {
+                        var el = document.querySelector('textarea[placeholder*="Type a message"]') || document.querySelector('[data-testid="stChatInput"] textarea') || document.querySelector('textarea');
+                        if (el) { el.focus(); }
+                    }, 150);
+                })();
+                </script>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        # Agent rows first (fixed layout) so thinking spinner below doesn't shift them
-        # [expander | spinner slot | button] — spinner slot reserves space so button never moves
-        a1_col1, a1_spin, a1_col2 = st.columns([3, 1, 1])
-        with a1_col1:
+        row1_col1, row1_col2 = st.columns([5, 1])
+        with row1_col1:
             with st.expander(f"{AGENT_1_NAME} role", expanded=False):
                 with st.form("agent1_role_form"):
                     st.text_area("Role", value=st.session_state.agent1_role, height=120, key="agent1_role_input", label_visibility="collapsed")
@@ -294,10 +322,11 @@ def main():
                         st.session_state.agent1_needs_intro = True  # introduce again on next response
                         st.session_state.dialogue.append(("instructor", f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", datetime.now()))
                         st.rerun()
-        _render_agent_respond_button("agent1", AGENT_1_NAME, a1_spin, a1_col2)
+        with row1_col2:
+            _render_agent_respond_button("agent1", row1_col2)
 
-        a2_col1, a2_spin, a2_col2 = st.columns([3, 1, 1])
-        with a2_col1:
+        row2_col1, row2_col2 = st.columns([5, 1])
+        with row2_col1:
             with st.expander(f"{AGENT_2_NAME} role", expanded=False):
                 with st.form("agent2_role_form"):
                     st.text_area("Role", value=st.session_state.agent2_role, height=120, key="agent2_role_input", label_visibility="collapsed")
@@ -307,24 +336,55 @@ def main():
                         st.session_state.agent2_needs_intro = True  # introduce again on next response
                         st.session_state.dialogue.append(("instructor", f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", datetime.now()))
                         st.rerun()
-        _render_agent_respond_button("agent2", AGENT_2_NAME, a2_spin, a2_col2)
+        with row2_col2:
+            _render_agent_respond_button("agent2", row2_col2)
 
-        # @mention spinners: show below agent rows so layout above doesn't shift
+        # Thinking spinner: full-width row so UI stays visible; CSS above forces spinner left-aligned
+        _thinking_col, = st.columns([1])
+        with _thinking_col:
+            if st.session_state.get("agent1_thinking", False):
+                with st.spinner(f"{AGENT_1_NAME} thinking…"):
+                    reply = call_openai_for_agent(_get_agent_role("agent1"), "agent1")
+                st.session_state.dialogue.append(("agent1", reply, datetime.now()))
+                st.session_state.agent1_thinking = False
+                st.session_state.agent1_needs_intro = False
+                _pending = st.session_state.get("pending_mention_agents", [])
+                if _pending and _pending[0] == "agent1":
+                    st.session_state.pending_mention_agents = _pending[1:]
+                    if st.session_state.pending_mention_agents:
+                        _next = st.session_state.pending_mention_agents[0]
+                        st.session_state[f"{_next}_thinking"] = True
+                    else:
+                        st.session_state.pending_mention_agents = []
+                    st.rerun()
+                st.rerun()
+            if st.session_state.get("agent2_thinking", False):
+                with st.spinner(f"{AGENT_2_NAME} thinking…"):
+                    reply = call_openai_for_agent(_get_agent_role("agent2"), "agent2")
+                st.session_state.dialogue.append(("agent2", reply, datetime.now()))
+                st.session_state.agent2_thinking = False
+                st.session_state.agent2_needs_intro = False
+                _pending = st.session_state.get("pending_mention_agents", [])
+                if _pending and _pending[0] == "agent2":
+                    st.session_state.pending_mention_agents = _pending[1:]
+                    if st.session_state.pending_mention_agents:
+                        _next = st.session_state.pending_mention_agents[0]
+                        st.session_state[f"{_next}_thinking"] = True
+                    else:
+                        st.session_state.pending_mention_agents = []
+                    st.rerun()
+                st.rerun()
+
+        # @mention: use same thinking path as Respond so spinner always appears in the same place
         if human_prompt:
             role = "moderator" if st.session_state.get("send_as_radio") == "Moderator" else "instructor"
             text = human_prompt.strip()
             if text:
                 st.session_state.dialogue.append((role, text, datetime.now()))
-                for agent_key in _mentioned_agents(text):
-                    _c1, _c2 = st.columns([4, 1])
-                    with _c2:
-                        with st.spinner(f"{_speaker_label(agent_key)} thinking…"):
-                            reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
-                    st.session_state.dialogue.append((agent_key, reply, datetime.now()))
-                    if agent_key == "agent1":
-                        st.session_state.agent1_needs_intro = False
-                    elif agent_key == "agent2":
-                        st.session_state.agent2_needs_intro = False
+                mentioned = _mentioned_agents(text)
+                if mentioned:
+                    st.session_state.pending_mention_agents = mentioned.copy()
+                    st.session_state[f"{mentioned[0]}_thinking"] = True
                 st.rerun()
 
     with right_col:

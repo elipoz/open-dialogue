@@ -1,0 +1,15 @@
+[project]
+name = "open-dialogue"
+version = "0.1.0"
+description = "3-way dialogue between a human moderator and two AI agents"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "streamlit>=1.51.0",
+    "tavily-python>=0.3.0",
+]
+
+[dependency-groups]
+dev = []

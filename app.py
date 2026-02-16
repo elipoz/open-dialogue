@@ -85,6 +85,10 @@ def init_session_state():
         st.session_state.agent1_needs_intro = False  # True after role update until agent posts
     if "agent2_needs_intro" not in st.session_state:
         st.session_state.agent2_needs_intro = False
+    if "agent1_thinking" not in st.session_state:
+        st.session_state.agent1_thinking = False  # True between button click and API finish (spinner in middle column)
+    if "agent2_thinking" not in st.session_state:
+        st.session_state.agent2_thinking = False
 
 
 def _get_agent_role(agent_key: str) -> str:
@@ -130,19 +134,22 @@ def _agent_has_spoken(speaker: str) -> bool:
 
 
 def _render_agent_respond_button(agent_key: str, name: str, spin_col, btn_col) -> None:
-    """Render reserved spinner slot and Respond button; on click show spinner in slot and call API. Same implementation for both agents."""
+    """Render spinner in middle column (between role and button), then Respond button. Same for both agents."""
+    thinking_key = "agent1_thinking" if agent_key == "agent1" else "agent2_thinking"
     with spin_col:
-        pass  # Reserved for spinner when this agent is thinking
-    with btn_col:
-        if st.button("Respond", key=f"gen_{agent_key}"):
-            with spin_col:
-                with st.spinner(f"{name} thinking…"):
-                    reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
+        if st.session_state.get(thinking_key, False):
+            with st.spinner(f"{name} thinking…"):
+                reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
             st.session_state.dialogue.append((agent_key, reply, datetime.now()))
+            st.session_state[thinking_key] = False
             if agent_key == "agent1":
                 st.session_state.agent1_needs_intro = False
             elif agent_key == "agent2":
                 st.session_state.agent2_needs_intro = False
+            st.rerun()
+    with btn_col:
+        if st.button("Respond", key=f"gen_{agent_key}"):
+            st.session_state[thinking_key] = True
             st.rerun()
 
 

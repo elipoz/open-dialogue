@@ -23,7 +23,7 @@ Optional (for agent web search):
 TAVILY_API_KEY=tvly-...
 ```
 
-**Password protection (when not running locally):** If you set `APP_PASSWORD` in `.env`, the app shows a password screen before the main UI—unless `RUNNING_LOCALLY=1` is set (e.g. for local dev). So locally you can set `RUNNING_LOCALLY=1` to skip the gate; in production set only `APP_PASSWORD`.
+**Password protection (on Streamlit Cloud only):** The app shows a password screen only when it detects it’s running on Streamlit Cloud (e.g. `/mount/src` or `STREAMLIT_SHARING_MODE=true`) and `APP_PASSWORD` is set. When you run locally, the password screen is skipped.
 
 ## Run
 
@@ -44,7 +44,7 @@ uv run streamlit run app.py --server.port 8501 --server.address 0.0.0.0
   - **Instructor** — Messages that instruct the agents what to do and when to respond.
   - **Moderator** — Messages that participate in the 3-way conversation with the two agents.
   - **Agent 1 & 2** — Collapsible role text (edit `AGENT_1_ROLE`, `AGENT_2_ROLE` and names `AGENT_1_NAME`, `AGENT_2_NAME` in `app.py`). **Respond** button to generate that agent’s reply.
-- **Right (~40%)** — **Full dialogue**: all messages in order, with timestamps. Newest first by default; **Reverse order** toggles to chronological.
+- **Right (~40%)** — **Conversation history**: all messages in order, with timestamps. Newest first by default; **Reverse order** toggles to chronological.
 
 ## @mentions
 

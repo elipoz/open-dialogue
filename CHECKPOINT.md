@@ -13,7 +13,7 @@ Open Dialogue with AI — Streamlit app for 3-way dialogue between Instructor, M
 - **Send as:** Moderator (default) or Instructor. Single chat input; press Enter to send.
 - **Two agents:** Configurable names and roles in `app.py` (e.g. Gosha, Joshi). Collapsible role text; **Respond** button per agent.
 - **@mentions:** `@g` / `@j` (first letter of agent name, case-insensitive, optional space after `@`) trigger that agent’s response automatically.
-- **Full dialogue:** Right panel shows all messages with timestamps. Newest first by default; **Reverse order** toggles to chronological.
+- **Conversation history:** Right panel shows all messages with timestamps. Newest first by default; **Reverse order** toggles to chronological.
 - **Tavily:** Optional `TAVILY_API_KEY` in `.env` for agent web search.
 - Dialogue is sent to OpenAI in chronological order; display order is independent.
 

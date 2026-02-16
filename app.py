@@ -18,15 +18,14 @@ from openai import OpenAI
 load_dotenv()
 
 
-def _running_locally() -> bool:
-    """True when RUNNING_LOCALLY is set in env (e.g. local dev); skip password when True."""
-    v = os.environ.get("RUNNING_LOCALLY", "").strip().lower()
-    return v in ("1", "true", "yes", "on")
+def _is_streamlit_cloud() -> bool:
+    """True when running on Streamlit Cloud; skip password when running locally (not cloud)."""
+    return os.path.exists("/mount/src") or os.environ.get("STREAMLIT_SHARING_MODE") == "true"
 
 
 def _require_password() -> bool:
-    """True when APP_PASSWORD is set and we're not running locally."""
-    return bool(os.environ.get("APP_PASSWORD")) and not _running_locally()
+    """True when on Streamlit Cloud and APP_PASSWORD is set (skip when running locally)."""
+    return _is_streamlit_cloud() and bool(os.environ.get("APP_PASSWORD"))
 
 
 # Optional Tavily client for web search (requires TAVILY_API_KEY in .env)
@@ -61,12 +60,13 @@ SEARCH_TOOL = {
 # -----------------------------------------------------------------------------
 # Agent names and roles (populate manually)
 # -----------------------------------------------------------------------------
-AGENT_1_NAME = "Gosha"  # Display name for first agent
-AGENT_2_NAME = "Joshi"  # Display name for second agent
+AGENT_1_NAME = "Gosha"  # Display name (fixed); role text is editable in UI
+AGENT_1_ROLE = """I am a professional therapist specializing in open dialogue."""
+AGENT_1_ROLE_AND_NAME = f"You are {AGENT_1_NAME}. {AGENT_1_ROLE}"
 
-AGENT_1_ROLE = f"""You are {AGENT_1_NAME}. You are a professional therapist specializing in open dialogue."""
-
-AGENT_2_ROLE = f"""You are {AGENT_2_NAME}. You are a philosopher specializing on Dostoevsky and Bakhtin."""
+AGENT_2_NAME = "Joshi"
+AGENT_2_ROLE = """I am a philosopher specializing on Dostoevsky and Bakhtin."""
+AGENT_2_ROLE_AND_NAME = f"You are {AGENT_2_NAME}. {AGENT_2_ROLE}"
 
 
 def init_session_state():
@@ -76,14 +76,28 @@ def init_session_state():
         st.session_state.send_as_radio = "Moderator"
     if "dialogue_newest_first" not in st.session_state:
         st.session_state.dialogue_newest_first = True  # True = newest first, False = chronological
+    # Store only role text (no name); name stays fixed from constants
     if "agent1_role" not in st.session_state:
         st.session_state.agent1_role = AGENT_1_ROLE
     if "agent2_role" not in st.session_state:
         st.session_state.agent2_role = AGENT_2_ROLE
+    if "agent1_needs_intro" not in st.session_state:
+        st.session_state.agent1_needs_intro = False  # True after role update until agent posts
+    if "agent2_needs_intro" not in st.session_state:
+        st.session_state.agent2_needs_intro = False
 
 
 def _get_agent_role(agent_key: str) -> str:
-    """Return current role for agent (editable in UI, falls back to default)."""
+    """Return full system prompt for agent: always 'You are {name}. {role}' so name stays fixed."""
+    if agent_key == "agent1":
+        role_text = st.session_state.get("agent1_role", AGENT_1_ROLE)
+        return f"You are {AGENT_1_NAME}. {role_text}"
+    role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
+    return f"You are {AGENT_2_NAME}. {role_text}"
+
+
+def _get_agent_role_text_only(agent_key: str) -> str:
+    """Return only the role text for the agent (no name), for use in first-message intro."""
     if agent_key == "agent1":
         return st.session_state.get("agent1_role", AGENT_1_ROLE)
     return st.session_state.get("agent2_role", AGENT_2_ROLE)
@@ -110,11 +124,45 @@ def _mentioned_agents(text: str) -> list[str]:
     return mentioned
 
 
-def build_messages_for_agent(role_prompt: str, speaker: str) -> list:
+def _agent_has_spoken(speaker: str) -> bool:
+    """True if this agent has already posted at least one message in the dialogue."""
+    return any(entry[0] == speaker for entry in st.session_state.dialogue)
+
+
+def _render_agent_respond_button(agent_key: str, name: str, spin_col, btn_col) -> None:
+    """Render reserved spinner slot and Respond button; on click show spinner in slot and call API. Same implementation for both agents."""
+    with spin_col:
+        pass  # Reserved for spinner when this agent is thinking
+    with btn_col:
+        if st.button("Respond", key=f"gen_{agent_key}"):
+            with spin_col:
+                with st.spinner(f"{name} thinking…"):
+                    reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
+            st.session_state.dialogue.append((agent_key, reply, datetime.now()))
+            if agent_key == "agent1":
+                st.session_state.agent1_needs_intro = False
+            elif agent_key == "agent2":
+                st.session_state.agent2_needs_intro = False
+            st.rerun()
+
+
+def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str | None = None) -> list:
     """Build OpenAI messages from the full dialogue in chronological order (oldest first). Each message is attributed so the agent has full context."""
     tools_instruction = ""
     if _get_tavily_client():
         tools_instruction = "\n\nYou have access to a web_search tool. Use it when you need to look up current information, facts, or events. After receiving search results, use them to inform your response."
+    intro_required = (
+        not _agent_has_spoken(speaker)
+        or (speaker == "agent1" and st.session_state.get("agent1_needs_intro", False))
+        or (speaker == "agent2" and st.session_state.get("agent2_needs_intro", False))
+    )
+    if intro_required:
+        intro = (
+            "\n\nYou must begin this message by clearly introducing yourself: state your name, then state your role. "
+            "Your role is: " + (role_text_only or "as defined above") + " "
+            "Include both your name and this role in your opening sentence or two, then respond to the discussion."
+        )
+        tools_instruction += intro
     messages = [{"role": "system", "content": role_prompt + tools_instruction}]
     # dialogue is always stored chronologically; send to API in that order (party, content, optional timestamp)
     for entry in st.session_state.dialogue:
@@ -151,7 +199,8 @@ def _run_tavily_search(query: str) -> str:
 
 def call_openai_for_agent(role_prompt: str, speaker: str) -> str:
     """Call OpenAI chat completion for the given agent (separate session per agent; no shared state). Agents can use web_search tool if Tavily is configured."""
-    messages = build_messages_for_agent(role_prompt, speaker)
+    role_text_only = _get_agent_role_text_only(speaker)
+    messages = build_messages_for_agent(role_prompt, speaker, role_text_only=role_text_only)
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))  # new client per call; each agent has its own independent request
     tools = [SEARCH_TOOL] if _get_tavily_client() else None
     max_tool_rounds = 5
@@ -210,7 +259,7 @@ def main():
 
     init_session_state()
 
-    left_col, right_col = st.columns([6, 4])  # 60% left, 40% Full dialogue
+    left_col, right_col = st.columns([6, 4])  # 60% left, 40% Conversation history
 
     with left_col:
         # Human message: choose role, type and press Enter (no Send button)
@@ -233,17 +282,10 @@ def main():
                     if st.form_submit_button("Update role"):
                         new_role = st.session_state.get("agent1_role_input", st.session_state.agent1_role)
                         st.session_state.agent1_role = new_role
+                        st.session_state.agent1_needs_intro = True  # introduce again on next response
                         st.session_state.dialogue.append(("instructor", f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", datetime.now()))
                         st.rerun()
-        with a1_spin:
-            pass  # Reserved for spinner when agent 1 is thinking
-        with a1_col2:
-            if st.button("Respond", key="gen_a1"):
-                with a1_spin:
-                    with st.spinner(f"{AGENT_1_NAME} thinking…"):
-                        reply = call_openai_for_agent(_get_agent_role("agent1"), "agent1")
-                st.session_state.dialogue.append(("agent1", reply, datetime.now()))
-                st.rerun()
+        _render_agent_respond_button("agent1", AGENT_1_NAME, a1_spin, a1_col2)
 
         a2_col1, a2_spin, a2_col2 = st.columns([3, 1, 1])
         with a2_col1:
@@ -253,17 +295,10 @@ def main():
                     if st.form_submit_button("Update role"):
                         new_role = st.session_state.get("agent2_role_input", st.session_state.agent2_role)
                         st.session_state.agent2_role = new_role
+                        st.session_state.agent2_needs_intro = True  # introduce again on next response
                         st.session_state.dialogue.append(("instructor", f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", datetime.now()))
                         st.rerun()
-        with a2_spin:
-            pass  # Reserved for spinner when agent 2 is thinking
-        with a2_col2:
-            if st.button("Respond", key="gen_a2"):
-                with a2_spin:
-                    with st.spinner(f"{AGENT_2_NAME} thinking…"):
-                        reply = call_openai_for_agent(_get_agent_role("agent2"), "agent2")
-                st.session_state.dialogue.append(("agent2", reply, datetime.now()))
-                st.rerun()
+        _render_agent_respond_button("agent2", AGENT_2_NAME, a2_spin, a2_col2)
 
         # @mention spinners: show below agent rows so layout above doesn't shift
         if human_prompt:
@@ -277,10 +312,14 @@ def main():
                         with st.spinner(f"{_speaker_label(agent_key)} thinking…"):
                             reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
                     st.session_state.dialogue.append((agent_key, reply, datetime.now()))
+                    if agent_key == "agent1":
+                        st.session_state.agent1_needs_intro = False
+                    elif agent_key == "agent2":
+                        st.session_state.agent2_needs_intro = False
                 st.rerun()
 
     with right_col:
-        st.subheader("Full dialogue")
+        st.subheader("Conversation history")
         SPEAKER_LABELS = {
             "instructor": "Instructor",
             "moderator": "Moderator",

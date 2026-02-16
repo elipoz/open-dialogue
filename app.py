@@ -6,12 +6,15 @@ The human moderator chats with both agents in a shared dialogue.
 Agents can use Tavily to search the web when they need up-to-date information.
 """
 
+import io
 import json
 import os
 import re
 from datetime import datetime
 
 import streamlit as st
+from docx import Document
+
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -132,9 +135,43 @@ def _mentioned_agents(text: str) -> list[str]:
     return mentioned
 
 
+def _expand_mentions_to_names(text: str) -> str:
+    """Replace @first_letter (e.g. @g, @ j) with the real agent name so history and OpenAI see names."""
+    if not text:
+        return text
+    result = text
+    if AGENT_1_NAME:
+        c1 = AGENT_1_NAME[0].lower()
+        result = re.sub(rf"@\s*{re.escape(c1)}", AGENT_1_NAME, result, flags=re.IGNORECASE)
+    if AGENT_2_NAME:
+        c2 = AGENT_2_NAME[0].lower()
+        result = re.sub(rf"@\s*{re.escape(c2)}", AGENT_2_NAME, result, flags=re.IGNORECASE)
+    return result
+
+
 def _agent_has_spoken(speaker: str) -> bool:
     """True if this agent has already posted at least one message in the dialogue."""
     return any(entry[0] == speaker for entry in st.session_state.dialogue)
+
+
+def _export_dialogue_to_docx(dialogue: list, speaker_labels: dict) -> bytes:
+    """Build a Word document with the full conversation in chronological order."""
+    doc = Document()
+    for entry in dialogue:
+        party, content = entry[0], entry[1]
+        ts = entry[2] if len(entry) >= 3 else None
+        label = speaker_labels.get(party, party)
+        p = doc.add_paragraph()
+        run = p.add_run(f"{label}: ")
+        run.bold = True
+        p.add_run(content)
+        if ts:
+            doc.add_paragraph(ts.strftime("%Y-%m-%d %H:%M"))
+        doc.add_paragraph()  # spacing between messages
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def _render_agent_respond_button(agent_key: str, btn_col) -> None:
@@ -380,7 +417,8 @@ def main():
             role = "moderator" if st.session_state.get("send_as_radio") == "Moderator" else "instructor"
             text = human_prompt.strip()
             if text:
-                st.session_state.dialogue.append((role, text, datetime.now()))
+                text_for_history = _expand_mentions_to_names(text)  # @g / @ j -> real names in history and for OpenAI
+                st.session_state.dialogue.append((role, text_for_history, datetime.now()))
                 mentioned = _mentioned_agents(text)
                 if mentioned:
                     st.session_state.pending_mention_agents = mentioned.copy()
@@ -412,6 +450,15 @@ def main():
             if st.button("Reverse order", key="dialogue_order_btn"):
                 st.session_state.dialogue_newest_first = not st.session_state.dialogue_newest_first
                 st.rerun()
+            # Export full conversation in chronological order to a Word document
+            docx_bytes = _export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
+            st.download_button(
+                "Export to doc",
+                data=docx_bytes,
+                file_name="conversation.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="export_dialogue_btn",
+            )
 
 
 if __name__ == "__main__":

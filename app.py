@@ -251,9 +251,11 @@ def main():
             st.session_state.authenticated = False
         if not st.session_state.authenticated:
             st.title("Open Dialogue with AI")
-            st.caption("Enter the app password to continue.")
-            pwd = st.text_input("Password", type="password", key="password_input", label_visibility="collapsed", placeholder="Password")
-            if st.button("Unlock"):
+            st.caption("Enter the app password and press Enter to continue.")
+            with st.form("password_form"):
+                pwd = st.text_input("Password", type="password", key="password_input", label_visibility="collapsed", placeholder="Password")
+                submitted = st.form_submit_button("Unlock")
+            if submitted:
                 if pwd and pwd == os.environ.get("APP_PASSWORD"):
                     st.session_state.authenticated = True
                     st.rerun()

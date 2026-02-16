@@ -254,7 +254,7 @@ def main():
             st.caption("Enter the app password and press Enter to continue.")
             with st.form("password_form"):
                 pwd = st.text_input("Password", type="password", key="password_input", label_visibility="collapsed", placeholder="Password")
-                submitted = st.form_submit_button("")  # Required for form; Enter in field submits (no visible button)
+                submitted = st.form_submit_button("Submit")
             if submitted:
                 if pwd and pwd == os.environ.get("APP_PASSWORD"):
                     st.session_state.authenticated = True

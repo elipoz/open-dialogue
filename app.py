@@ -17,6 +17,18 @@ from openai import OpenAI
 
 load_dotenv()
 
+
+def _running_locally() -> bool:
+    """True when RUNNING_LOCALLY is set in env (e.g. local dev); skip password when True."""
+    v = os.environ.get("RUNNING_LOCALLY", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _require_password() -> bool:
+    """True when APP_PASSWORD is set and we're not running locally."""
+    return bool(os.environ.get("APP_PASSWORD")) and not _running_locally()
+
+
 # Optional Tavily client for web search (requires TAVILY_API_KEY in .env)
 _tavily_client = None
 
@@ -64,6 +76,17 @@ def init_session_state():
         st.session_state.send_as_radio = "Moderator"
     if "dialogue_newest_first" not in st.session_state:
         st.session_state.dialogue_newest_first = True  # True = newest first, False = chronological
+    if "agent1_role" not in st.session_state:
+        st.session_state.agent1_role = AGENT_1_ROLE
+    if "agent2_role" not in st.session_state:
+        st.session_state.agent2_role = AGENT_2_ROLE
+
+
+def _get_agent_role(agent_key: str) -> str:
+    """Return current role for agent (editable in UI, falls back to default)."""
+    if agent_key == "agent1":
+        return st.session_state.get("agent1_role", AGENT_1_ROLE)
+    return st.session_state.get("agent2_role", AGENT_2_ROLE)
 
 
 def _speaker_label(party: str) -> str:
@@ -165,6 +188,23 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> str:
 
 def main():
     st.set_page_config(page_title="Open Dialogue with AI", page_icon="💬", layout="wide")
+
+    # Password gate (only when APP_PASSWORD is set and not running locally)
+    if _require_password():
+        if "authenticated" not in st.session_state:
+            st.session_state.authenticated = False
+        if not st.session_state.authenticated:
+            st.title("Open Dialogue with AI")
+            st.caption("Enter the app password to continue.")
+            pwd = st.text_input("Password", type="password", key="password_input", label_visibility="collapsed", placeholder="Password")
+            if st.button("Unlock"):
+                if pwd and pwd == os.environ.get("APP_PASSWORD"):
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+            st.stop()
+
     st.title("Open Dialogue with AI")
     st.caption("Human moderator + two AI agents in a 3-way conversation.")
 
@@ -182,43 +222,61 @@ def main():
             label_visibility="collapsed",
         )
         human_prompt = st.chat_input("Type a message and press Enter to send")
+
+        # Agent rows first (fixed layout) so thinking spinner below doesn't shift them
+        # [expander | spinner slot | button] — spinner slot reserves space so button never moves
+        a1_col1, a1_spin, a1_col2 = st.columns([3, 1, 1])
+        with a1_col1:
+            with st.expander(f"{AGENT_1_NAME} role", expanded=False):
+                with st.form("agent1_role_form"):
+                    st.text_area("Role", value=st.session_state.agent1_role, height=120, key="agent1_role_input", label_visibility="collapsed")
+                    if st.form_submit_button("Update role"):
+                        new_role = st.session_state.get("agent1_role_input", st.session_state.agent1_role)
+                        st.session_state.agent1_role = new_role
+                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", datetime.now()))
+                        st.rerun()
+        with a1_spin:
+            pass  # Reserved for spinner when agent 1 is thinking
+        with a1_col2:
+            if st.button("Respond", key="gen_a1"):
+                with a1_spin:
+                    with st.spinner(f"{AGENT_1_NAME} thinking…"):
+                        reply = call_openai_for_agent(_get_agent_role("agent1"), "agent1")
+                st.session_state.dialogue.append(("agent1", reply, datetime.now()))
+                st.rerun()
+
+        a2_col1, a2_spin, a2_col2 = st.columns([3, 1, 1])
+        with a2_col1:
+            with st.expander(f"{AGENT_2_NAME} role", expanded=False):
+                with st.form("agent2_role_form"):
+                    st.text_area("Role", value=st.session_state.agent2_role, height=120, key="agent2_role_input", label_visibility="collapsed")
+                    if st.form_submit_button("Update role"):
+                        new_role = st.session_state.get("agent2_role_input", st.session_state.agent2_role)
+                        st.session_state.agent2_role = new_role
+                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", datetime.now()))
+                        st.rerun()
+        with a2_spin:
+            pass  # Reserved for spinner when agent 2 is thinking
+        with a2_col2:
+            if st.button("Respond", key="gen_a2"):
+                with a2_spin:
+                    with st.spinner(f"{AGENT_2_NAME} thinking…"):
+                        reply = call_openai_for_agent(_get_agent_role("agent2"), "agent2")
+                st.session_state.dialogue.append(("agent2", reply, datetime.now()))
+                st.rerun()
+
+        # @mention spinners: show below agent rows so layout above doesn't shift
         if human_prompt:
             role = "moderator" if st.session_state.get("send_as_radio") == "Moderator" else "instructor"
             text = human_prompt.strip()
             if text:
                 st.session_state.dialogue.append((role, text, datetime.now()))
                 for agent_key in _mentioned_agents(text):
-                    # Use same [4,1] columns so spinner appears to the right, aligned with Respond buttons
                     _c1, _c2 = st.columns([4, 1])
                     with _c2:
                         with st.spinner(f"{_speaker_label(agent_key)} thinking…"):
-                            agent_role = AGENT_1_ROLE if agent_key == "agent1" else AGENT_2_ROLE
-                            reply = call_openai_for_agent(agent_role, agent_key)
+                            reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
                     st.session_state.dialogue.append((agent_key, reply, datetime.now()))
-                st.rerun()
-
-        # Agent 1 role + Respond button (one line; [4,1] aligns with Send button column)
-        a1_col1, a1_col2 = st.columns([4, 1])
-        with a1_col1:
-            with st.expander(f"{AGENT_1_NAME} role", expanded=False):
-                st.text_area("Role", value=AGENT_1_ROLE, height=120, disabled=True, key="role1_display", label_visibility="collapsed")
-        with a1_col2:
-            if st.button("Respond", key="gen_a1"):
-                with st.spinner(f"{AGENT_1_NAME} thinking…"):
-                    reply = call_openai_for_agent(AGENT_1_ROLE, "agent1")
-                st.session_state.dialogue.append(("agent1", reply, datetime.now()))
-                st.rerun()
-
-        # Agent 2 role + Respond button (one line; [4,1] aligns with Send button column)
-        a2_col1, a2_col2 = st.columns([4, 1])
-        with a2_col1:
-            with st.expander(f"{AGENT_2_NAME} role", expanded=False):
-                st.text_area("Role", value=AGENT_2_ROLE, height=120, disabled=True, key="role2_display", label_visibility="collapsed")
-        with a2_col2:
-            if st.button("Respond", key="gen_a2"):
-                with st.spinner(f"{AGENT_2_NAME} thinking…"):
-                    reply = call_openai_for_agent(AGENT_2_ROLE, "agent2")
-                st.session_state.dialogue.append(("agent2", reply, datetime.now()))
                 st.rerun()
 
     with right_col:

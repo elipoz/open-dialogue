@@ -23,6 +23,8 @@ Optional (for agent web search):
 TAVILY_API_KEY=tvly-...
 ```
 
+**Password protection (when not running locally):** If you set `APP_PASSWORD` in `.env`, the app shows a password screen before the main UI—unless `RUNNING_LOCALLY=1` is set (e.g. for local dev). So locally you can set `RUNNING_LOCALLY=1` to skip the gate; in production set only `APP_PASSWORD`.
+
 ## Run
 
 ```bash

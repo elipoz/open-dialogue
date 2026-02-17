@@ -18,7 +18,10 @@ from docx import Document
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
+# Load .env from the directory containing this script (so it works when run via streamlit run app.py from any cwd)
+_load_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(_load_env_path)
+load_dotenv()  # also load from current working directory
 
 
 def _is_streamlit_cloud() -> bool:
@@ -33,15 +36,17 @@ def _require_password() -> bool:
 
 # Optional Tavily client for web search (requires TAVILY_API_KEY in .env)
 _tavily_client = None
+_tavily_error: str | None = None  # set if client creation fails (for UI hint)
 
 def _get_tavily_client():
-    global _tavily_client
+    global _tavily_client, _tavily_error
     if _tavily_client is None and os.environ.get("TAVILY_API_KEY"):
         try:
             from tavily import TavilyClient
             _tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-        except Exception:
-            pass
+            _tavily_error = None
+        except Exception as e:
+            _tavily_error = str(e)
     return _tavily_client
 
 # OpenAI tool definition for web search
@@ -99,12 +104,20 @@ def init_session_state():
 
 
 def _get_agent_role(agent_key: str) -> str:
-    """Return full system prompt for agent: always 'You are {name}. {role}' so name stays fixed."""
+    """Return full system prompt for agent: fixed identity and role; never speak as others."""
     if agent_key == "agent1":
+        name, other = AGENT_1_NAME, AGENT_2_NAME
         role_text = st.session_state.get("agent1_role", AGENT_1_ROLE)
-        return f"You are {AGENT_1_NAME}. {role_text}"
-    role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
-    return f"You are {AGENT_2_NAME}. {role_text}"
+    else:
+        name, other = AGENT_2_NAME, AGENT_1_NAME
+        role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
+    return (
+        f"You are {name}. {role_text}\n\n"
+        f"IDENTITY (strict): You must respond ONLY as {name}. "
+        f"Never speak as, or on behalf of, the Instructor, the Moderator, or {other}. "
+        f"Your reply will be displayed as '{name}:' — write only your own words in first person as {name}. "
+        f"Do not attribute lines to others or say what they would say."
+    )
 
 
 def _get_agent_role_text_only(agent_key: str) -> str:
@@ -215,6 +228,12 @@ def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str
             messages.append({"role": "assistant", "content": attributed})
         else:
             messages.append({"role": "user", "content": attributed})
+    # Anchor this turn: remind the model to reply only as this agent (fixed identity)
+    my_name = _speaker_label(speaker)
+    messages.append({
+        "role": "user",
+        "content": f"[Reply now only as {my_name}. Your response will be shown as '{my_name}:' in the conversation.]",
+    })
     return messages
 
 
@@ -299,7 +318,16 @@ def main():
             st.stop()
 
     st.title("Open Dialogue with AI")
-    st.caption("Human moderator + two AI agents in a 3-way conversation.")
+    _tavily = _get_tavily_client()
+    _tavily_key_set = bool(os.environ.get("TAVILY_API_KEY"))
+    if _tavily:
+        st.caption("Tavily (web search): enabled — agents can look up current information.")
+    elif _tavily_key_set and _tavily_error:
+        st.caption(f"Tavily (web search): disabled — key set but client failed: {_tavily_error}")
+    elif _tavily_key_set:
+        st.caption("Tavily (web search): disabled — key set but client failed. Check that tavily-python is installed.")
+    else:
+        st.caption("Tavily (web search): disabled — TAVILY_API_KEY not in environment. Add it to .env next to app.py (or run from project root).")
 
     init_session_state()
 
@@ -332,7 +360,7 @@ def main():
         if _current_radio != _prev_radio:
             st.session_state.focus_chat_input = True
             st.session_state.send_as_radio_prev = _current_radio
-        # Same width for all three; each Respond button on the same row as its agent
+        # Same width for chat input and agent rows; each Respond button on the same row as its agent
         row0_col1, row0_col2 = st.columns([5, 1])
         with row0_col1:
             human_prompt = st.chat_input("Type a message and press Enter to send")

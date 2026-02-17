@@ -359,6 +359,25 @@ def main():
 
     _mod_name = (st.session_state.get("moderator_name") or "").strip()
     st.title(f"{_mod_name}'s Open Dialogue with AI" if _mod_name else "Open Dialogue with AI")
+
+    init_session_state()
+
+    # Moderator must state their name before any conversation; all fields hidden until then
+    if not _mod_name:
+        st.markdown('<p style="font-size: 1.25rem; color: #000000; font-weight: 500;">State your name as the moderator to start.</p>', unsafe_allow_html=True)
+        _name_col, _ = st.columns([1, 3])  # shorten the text box
+        with _name_col:
+            with st.form("moderator_name_form"):
+                mod_name = st.text_input("Your name (as moderator)", key="moderator_name_input", placeholder="Enter your name", label_visibility="collapsed", max_chars=15)
+                if st.form_submit_button("Start"):
+                    if (mod_name or "").strip():
+                        st.session_state.moderator_name = (mod_name or "").strip()[:15]
+                        st.rerun()
+                    else:
+                        st.error("Please enter a non-empty name.")
+        st.stop()
+
+    # Tavily caption only after name is set (not on the name-entry page)
     _tavily = _get_tavily_client()
     _tavily_key_set = bool(os.environ.get("TAVILY_API_KEY"))
     if _tavily:
@@ -369,21 +388,6 @@ def main():
         st.caption("Tavily (web search): disabled — key set but client failed. Check that tavily-python is installed.")
     else:
         st.caption("Tavily (web search): disabled — TAVILY_API_KEY not in environment. Add it to .env next to app.py (or run from project root).")
-
-    init_session_state()
-
-    # Moderator must state their name before any conversation; all fields hidden until then
-    if not (st.session_state.get("moderator_name") or "").strip():
-        st.caption("State your name as the moderator to start. All fields will be available after you submit.")
-        with st.form("moderator_name_form"):
-            mod_name = st.text_input("Your name (as moderator)", key="moderator_name_input", placeholder="Enter your name", label_visibility="collapsed")
-            if st.form_submit_button("Start"):
-                if (mod_name or "").strip():
-                    st.session_state.moderator_name = (mod_name or "").strip()
-                    st.rerun()
-                else:
-                    st.error("Please enter a non-empty name.")
-        st.stop()
 
     # Supabase: ensure we have a conversation (new or from URL) and load history when opening a link
     conv_id = st.session_state.get("conversation_id") or ""

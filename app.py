@@ -463,10 +463,12 @@ def main():
             if text:
                 text_for_history = _expand_mentions_to_names(text)  # @g / @ j -> real names in history and for OpenAI
                 st.session_state.dialogue.append((role, text_for_history, datetime.now()))
-                mentioned = _mentioned_agents(text)
-                if mentioned:
-                    st.session_state.pending_mention_agents = mentioned.copy()
-                    st.session_state[f"{mentioned[0]}_thinking"] = True
+                # Agents respond to @-mentions only when the message is from the Moderator, not the Instructor
+                if role == "moderator":
+                    mentioned = _mentioned_agents(text)
+                    if mentioned:
+                        st.session_state.pending_mention_agents = mentioned.copy()
+                        st.session_state[f"{mentioned[0]}_thinking"] = True
                 st.rerun()
 
     with right_col:

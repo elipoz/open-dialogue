@@ -103,6 +103,14 @@ def init_session_state():
         st.session_state.agent2_thinking = False
     if "pending_mention_agents" not in st.session_state:
         st.session_state.pending_mention_agents = []  # queue of agent_key when replying via @mention (same spinner location as Respond)
+    if "moderator_name" not in st.session_state:
+        st.session_state.moderator_name = ""  # set before conversation; used as label in history instead of "Moderator"
+
+
+def _get_moderator_display_name() -> str:
+    """Display name for moderator in conversation history (user-provided name, or fallback)."""
+    name = (st.session_state.get("moderator_name") or "").strip()
+    return name if name else "Moderator"
 
 
 def _get_agent_role(agent_key: str) -> str:
@@ -116,7 +124,7 @@ def _get_agent_role(agent_key: str) -> str:
     return (
         f"You are {name}. {role_text}\n\n"
         f"IDENTITY (strict): You must respond ONLY as {name}. Write only your own words in first person as {name}. "
-        f"Never speak as, or on behalf of, the Instructor, the Moderator, or {other}. "
+        f"Never speak as, or on behalf of, the Instructor, the moderator ({_get_moderator_display_name()}), or {other}. "
         f"Do not attribute lines to others or say what they would say.\n\n"
         f"SPEAK ONLY FOR YOURSELF: You may refer to questions and reflect on answers from other participants in the conversation, "
         f"but you must reply only on your own behalf — based on what you, as {name}, think is the best answer. "
@@ -133,8 +141,8 @@ def _get_agent_role_text_only(agent_key: str) -> str:
 
 
 def _speaker_label(party: str) -> str:
-    """Return display label for a party in the dialogue."""
-    labels = {"instructor": "Instructor", "moderator": "Moderator", "agent1": AGENT_1_NAME, "agent2": AGENT_2_NAME}
+    """Return display label for a party in the dialogue (moderator uses session moderator_name)."""
+    labels = {"instructor": "Instructor", "moderator": _get_moderator_display_name(), "agent1": AGENT_1_NAME, "agent2": AGENT_2_NAME}
     return labels.get(party, party)
 
 
@@ -344,6 +352,19 @@ def main():
 
     init_session_state()
 
+    # Moderator must state their name before any conversation; all fields hidden until then
+    if not (st.session_state.get("moderator_name") or "").strip():
+        st.caption("State your name as the moderator to start. All fields will be available after you submit.")
+        with st.form("moderator_name_form"):
+            mod_name = st.text_input("Your name (as moderator)", key="moderator_name_input", placeholder="Enter your name", label_visibility="collapsed")
+            if st.form_submit_button("Start"):
+                if (mod_name or "").strip():
+                    st.session_state.moderator_name = (mod_name or "").strip()
+                    st.rerun()
+                else:
+                    st.error("Please enter a non-empty name.")
+        st.stop()
+
     # CSS: force thinking spinner to be left-aligned (Streamlit often right-aligns it in columns)
     st.markdown(
         """
@@ -477,7 +498,7 @@ def main():
         st.subheader("Conversation history")
         SPEAKER_LABELS = {
             "instructor": "Instructor",
-            "moderator": "Moderator",
+            "moderator": _get_moderator_display_name(),
             "agent1": AGENT_1_NAME,
             "agent2": AGENT_2_NAME,
         }
@@ -511,3 +532,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

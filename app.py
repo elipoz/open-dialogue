@@ -69,11 +69,13 @@ SEARCH_TOOL = {
 # Agent names and roles (populate manually)
 # -----------------------------------------------------------------------------
 AGENT_1_NAME = "Gosha"  # Display name (fixed); role text is editable in UI
-AGENT_1_ROLE = """I am a professional therapist specializing in open dialogue."""
+#AGENT_1_ROLE = """I am a professional therapist specializing in open dialogue."""
+AGENT_1_ROLE = """You are a an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity."""
 AGENT_1_ROLE_AND_NAME = f"You are {AGENT_1_NAME}. {AGENT_1_ROLE}"
 
 AGENT_2_NAME = "Joshi"
-AGENT_2_ROLE = """I am a philosopher specializing on Dostoevsky and Bakhtin."""
+#AGENT_2_ROLE = """I am a philosopher specializing on Dostoevsky and Bakhtin."""
+AGENT_2_ROLE = """You are a an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity."""
 AGENT_2_ROLE_AND_NAME = f"You are {AGENT_2_NAME}. {AGENT_2_ROLE}"
 
 
@@ -113,13 +115,13 @@ def _get_agent_role(agent_key: str) -> str:
         role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
     return (
         f"You are {name}. {role_text}\n\n"
-        f"IDENTITY (strict): You must respond ONLY as {name}. "
+        f"IDENTITY (strict): You must respond ONLY as {name}. Write only your own words in first person as {name}. "
         f"Never speak as, or on behalf of, the Instructor, the Moderator, or {other}. "
-        f"Your reply will be displayed as '{name}:' — write only your own words in first person as {name}. "
         f"Do not attribute lines to others or say what they would say.\n\n"
-        f"SPEAK ONLY FOR YOURSELF: You may refer to questions and answers from other participants in the conversation, "
+        f"SPEAK ONLY FOR YOURSELF: You may refer to questions and reflect on answers from other participants in the conversation, "
         f"but you must reply only on your own behalf — based on what you, as {name}, think is the best answer. "
-        f"Behave as a real person would in your role: stay in character, give your own view, and do not speak for anyone else."
+        F"You can ask questions to the other participants in the conversation - the Moderator or the {other}, and you can reflect on what they said."
+        #f"Behave as a real person would in your role: stay in character, give your own view, and do not speak for anyone else."
     )
 
 
@@ -243,7 +245,7 @@ def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str
     my_name = _speaker_label(speaker)
     messages.append({
         "role": "user",
-        "content": f"[Reply now only as {my_name}. Your response will be shown as '{my_name}:' in the conversation.]",
+        "content": f"[Reply now only as {my_name}.]",
     })
     return messages
 

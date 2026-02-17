@@ -116,7 +116,10 @@ def _get_agent_role(agent_key: str) -> str:
         f"IDENTITY (strict): You must respond ONLY as {name}. "
         f"Never speak as, or on behalf of, the Instructor, the Moderator, or {other}. "
         f"Your reply will be displayed as '{name}:' — write only your own words in first person as {name}. "
-        f"Do not attribute lines to others or say what they would say."
+        f"Do not attribute lines to others or say what they would say.\n\n"
+        f"SPEAK ONLY FOR YOURSELF: You may refer to questions and answers from other participants in the conversation, "
+        f"but you must reply only on your own behalf — based on what you, as {name}, think is the best answer. "
+        f"Behave as a real person would in your role: stay in character, give your own view, and do not speak for anyone else."
     )
 
 
@@ -133,32 +136,40 @@ def _speaker_label(party: str) -> str:
     return labels.get(party, party)
 
 
+def _mention_pattern_for_name(name: str) -> str:
+    """Regex pattern: @ plus optional space, then first letter or any prefix of name (e.g. @g, @ gosha)."""
+    if not name:
+        return ""
+    lower = name.lower()
+    # @\s* + first char + (char2)? + (char3)? + ... so we match @g, @go, @gosha, etc.
+    pattern = r"@\s*" + re.escape(lower[0])
+    for i in range(1, len(lower)):
+        pattern += "(" + re.escape(lower[i]) + ")?"
+    return pattern
+
+
 def _mentioned_agents(text: str) -> list[str]:
-    """Return list of agent keys triggered by @first_letter (e.g. @g or @ g -> Gosha). Case-insensitive; allows optional space after @."""
+    """Return agent keys when @-mentioned: @ or @ then space, then first letter or any prefix of name (e.g. @g, @ gosha). Full name without @ does NOT trigger."""
     mentioned = []
     lower = text.lower()
     if AGENT_1_NAME:
-        c1 = AGENT_1_NAME[0].lower()
-        if re.search(rf"@\s*{re.escape(c1)}", lower):
+        if re.search(_mention_pattern_for_name(AGENT_1_NAME), lower):
             mentioned.append("agent1")
     if AGENT_2_NAME:
-        c2 = AGENT_2_NAME[0].lower()
-        if re.search(rf"@\s*{re.escape(c2)}", lower):
+        if re.search(_mention_pattern_for_name(AGENT_2_NAME), lower):
             mentioned.append("agent2")
     return mentioned
 
 
 def _expand_mentions_to_names(text: str) -> str:
-    """Replace @first_letter (e.g. @g, @ j) with the real agent name so history and OpenAI see names."""
+    """Replace @-mentions (e.g. @g, @ gosha) with the full agent name for history and OpenAI."""
     if not text:
         return text
     result = text
     if AGENT_1_NAME:
-        c1 = AGENT_1_NAME[0].lower()
-        result = re.sub(rf"@\s*{re.escape(c1)}", AGENT_1_NAME, result, flags=re.IGNORECASE)
+        result = re.sub(_mention_pattern_for_name(AGENT_1_NAME), AGENT_1_NAME, result, flags=re.IGNORECASE)
     if AGENT_2_NAME:
-        c2 = AGENT_2_NAME[0].lower()
-        result = re.sub(rf"@\s*{re.escape(c2)}", AGENT_2_NAME, result, flags=re.IGNORECASE)
+        result = re.sub(_mention_pattern_for_name(AGENT_2_NAME), AGENT_2_NAME, result, flags=re.IGNORECASE)
     return result
 
 

@@ -12,8 +12,26 @@ import re
 import time
 import uuid as uuid_lib
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import streamlit as st
+
+# All UI timestamps shown in PST
+_PST = ZoneInfo("America/Los_Angeles")
+
+
+def _format_in_pst(dt, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Format a datetime in PST. Naive datetimes are assumed UTC (e.g. from Supabase)."""
+    if dt is None:
+        return ""
+    if hasattr(dt, "tzinfo") and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(_PST).strftime(fmt)
+
+
+def _now_pst() -> datetime:
+    """Current time in PST (for new conversation label)."""
+    return datetime.now(_PST)
 
 from doc_export import export_dialogue_to_docx
 from dotenv import load_dotenv
@@ -432,7 +450,7 @@ def main():
         new_id = create_conversation()
         if new_id:
             _cache = [c for c in (st.session_state.conversation_list_cache or []) if c.get("id") != new_id]
-            st.session_state.conversation_list_cache = [{"id": new_id, "created_at": datetime.now()}] + _cache
+            st.session_state.conversation_list_cache = [{"id": new_id, "created_at": _now_pst()}] + _cache
             st.session_state.conversation_list_cache_ts = time.time()
             st.session_state.conversation_id = new_id
             st.session_state.dialogue = []
@@ -473,7 +491,7 @@ def main():
             if new_id:
                 # Prepend new conversation to sidebar list so it shows immediately (avoid duplicate id in list)
                 _cache = [c for c in (st.session_state.conversation_list_cache or []) if c.get("id") != new_id]
-                st.session_state.conversation_list_cache = [{"id": new_id, "created_at": datetime.now()}] + _cache
+                st.session_state.conversation_list_cache = [{"id": new_id, "created_at": _now_pst()}] + _cache
                 st.session_state.conversation_list_cache_ts = time.time()
                 st.session_state.conversation_id = new_id
                 st.session_state.dialogue = []
@@ -499,7 +517,7 @@ def main():
                     continue
                 created = c.get("created_at")
                 if hasattr(created, "isoformat"):
-                    created_str = created.isoformat()[:19].replace("T", " ")
+                    created_str = _format_in_pst(created, "%Y-%m-%d %H:%M:%S")
                 else:
                     created_str = (str(created) if created else "")[:19].replace("T", " ")
                 label = "Conversation · " + created_str
@@ -691,7 +709,7 @@ def main():
                 st.markdown(f"**{label}:**")
                 st.markdown(content)
                 if ts:
-                    st.caption(ts.strftime("%Y-%m-%d %H:%M"))
+                    st.caption(_format_in_pst(ts, "%Y-%m-%d %H:%M"))
         if st.session_state.dialogue:
             docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
             _exp_left, _exp_right = st.columns([3, 1])

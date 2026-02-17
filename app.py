@@ -6,17 +6,26 @@ The human moderator chats with both agents in a shared dialogue.
 Agents can use Tavily to search the web when they need up-to-date information.
 """
 
-import io
 import json
 import os
 import re
+import uuid as uuid_lib
 from datetime import datetime
 
 import streamlit as st
-from docx import Document
 
+from doc_export import export_dialogue_to_docx
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from supabase_client import (
+    create_conversation,
+    delete_conversation,
+    get_supabase,
+    list_conversations,
+    load_messages,
+    persist_message,
+)
 
 # Load .env from the directory containing this script (so it works when run via streamlit run app.py from any cwd)
 _load_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -105,6 +114,25 @@ def init_session_state():
         st.session_state.pending_mention_agents = []  # queue of agent_key when replying via @mention (same spinner location as Respond)
     if "moderator_name" not in st.session_state:
         st.session_state.moderator_name = ""  # set before conversation; used as label in history instead of "Moderator"
+    # Supabase: conversation_id from URL; when it changes, clear dialogue so we load from DB
+    _param_id = (st.query_params.get("conversation_id") or "").strip()
+    _valid_uuid = False
+    if _param_id:
+        try:
+            uuid_lib.UUID(_param_id)
+            _valid_uuid = True
+        except ValueError:
+            pass
+    if _valid_uuid:
+        _prev_id = st.session_state.get("conversation_id")
+        st.session_state.conversation_id = _param_id
+        if _prev_id != _param_id:
+            st.session_state.dialogue = []
+            st.session_state.loaded_conversation_id = None
+    else:
+        st.session_state.conversation_id = ""
+        if "loaded_conversation_id" not in st.session_state:
+            st.session_state.loaded_conversation_id = None
 
 
 def _get_moderator_display_name() -> str:
@@ -144,6 +172,17 @@ def _speaker_label(party: str) -> str:
     """Return display label for a party in the dialogue (moderator uses session moderator_name)."""
     labels = {"instructor": "Instructor", "moderator": _get_moderator_display_name(), "agent1": AGENT_1_NAME, "agent2": AGENT_2_NAME}
     return labels.get(party, party)
+
+
+def _author_display_name_to_party(author_display_name: str) -> str:
+    """Map author display name from DB back to party key (instructor, moderator, agent1, agent2)."""
+    if author_display_name == "Instructor":
+        return "instructor"
+    if author_display_name == AGENT_1_NAME:
+        return "agent1"
+    if author_display_name == AGENT_2_NAME:
+        return "agent2"
+    return "moderator"  # any other human name
 
 
 def _mention_pattern_for_name(name: str) -> str:
@@ -186,26 +225,6 @@ def _expand_mentions_to_names(text: str) -> str:
 def _agent_has_spoken(speaker: str) -> bool:
     """True if this agent has already posted at least one message in the dialogue."""
     return any(entry[0] == speaker for entry in st.session_state.dialogue)
-
-
-def _export_dialogue_to_docx(dialogue: list, speaker_labels: dict) -> bytes:
-    """Build a Word document with the full conversation in chronological order."""
-    doc = Document()
-    for entry in dialogue:
-        party, content = entry[0], entry[1]
-        ts = entry[2] if len(entry) >= 3 else None
-        label = speaker_labels.get(party, party)
-        p = doc.add_paragraph()
-        run = p.add_run(f"{label}: ")
-        run.bold = True
-        p.add_run(content)
-        if ts:
-            doc.add_paragraph(ts.strftime("%Y-%m-%d %H:%M"))
-        doc.add_paragraph()  # spacing between messages
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
 
 
 def _render_agent_respond_button(agent_key: str, btn_col) -> None:
@@ -365,17 +384,87 @@ def main():
                     st.error("Please enter a non-empty name.")
         st.stop()
 
-    # CSS: force thinking spinner to be left-aligned (Streamlit often right-aligns it in columns)
+    # Supabase: ensure we have a conversation (new or from URL) and load history when opening a link
+    conv_id = st.session_state.get("conversation_id") or ""
+    if not conv_id:
+        # No conversation_id in URL → create new conversation and put id in URL
+        new_id = create_conversation()
+        if new_id:
+            st.session_state.conversation_id = new_id
+            st.session_state.dialogue = []
+            st.query_params["conversation_id"] = new_id
+            st.rerun()
+        # If Supabase unavailable, continue without conversation_id (no persistence)
+    else:
+        # conversation_id in URL: load entire history if not yet loaded for this conversation
+        if st.session_state.get("loaded_conversation_id") != conv_id:
+            loaded = load_messages(conv_id)  # (author_display_name, message, ts)
+            st.session_state.dialogue = [(_author_display_name_to_party(a), m, t) for a, m, t in loaded]
+            st.session_state.loaded_conversation_id = conv_id
+
+    # CSS: force thinking spinner left-aligned; prevent button text wrapping (e.g. Respond)
     st.markdown(
         """
         <style>
         [data-testid="stSpinner"] { margin-right: auto !important; text-align: left !important; }
         [data-testid="stSpinner"] * { text-align: left !important; }
         div:has([data-testid="stSpinner"]) { justify-content: flex-start !important; }
+        [data-testid="stButton"] button { white-space: nowrap !important; }
+        .stSidebar [data-testid="stButton"] { margin-top: 0.25rem !important; margin-bottom: 0.25rem !important; }
+        [data-testid="stSidebar"] { min-width: 360px !important; max-width: 440px !important; }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+    # Sidebar: previous conversations and New conversation
+    with st.sidebar:
+        st.subheader("Conversations")
+        if st.button("New conversation", key="sidebar_new_conversation", use_container_width=True):
+            new_id = create_conversation()
+            if new_id:
+                st.session_state.conversation_id = new_id
+                st.session_state.dialogue = []
+                st.session_state.loaded_conversation_id = None
+                st.query_params["conversation_id"] = new_id
+                st.rerun()
+        conv_list = list_conversations(50)
+        current_id = st.session_state.get("conversation_id") or ""
+        for c in conv_list:
+            cid = c.get("id") or ""
+            if not cid:
+                continue
+            created = c.get("created_at")
+            if hasattr(created, "isoformat"):
+                created_str = created.isoformat()[:19].replace("T", " ")
+            else:
+                created_str = (str(created) if created else "")[:19].replace("T", " ")
+            label = "Conversation · " + created_str
+            if len(label) > 45:
+                label = label[:42] + "..."
+            is_current = cid == current_id
+            row_col, del_col = st.columns([5, 1])
+            with row_col:
+                if st.button(label, key=f"conv_{cid}", use_container_width=True, type="primary" if is_current else "secondary"):
+                    st.query_params["conversation_id"] = cid
+                    st.rerun()
+            with del_col:
+                if st.button("×", key=f"del_{cid}", help="Delete this conversation"):
+                    if delete_conversation(cid):
+                        if cid == current_id:
+                            st.session_state.conversation_id = ""
+                            st.session_state.dialogue = []
+                            st.session_state.loaded_conversation_id = None
+                            st.query_params.clear()
+                            new_id = create_conversation()
+                            if new_id:
+                                st.session_state.conversation_id = new_id
+                                st.query_params["conversation_id"] = new_id
+                        st.rerun()
+        if not conv_list and get_supabase():
+            st.caption("No conversations yet.")
+        elif not get_supabase():
+            st.caption("Supabase: set SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) in .env to save conversations.")
 
     left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history
 
@@ -394,8 +483,8 @@ def main():
         if _current_radio != _prev_radio:
             st.session_state.focus_chat_input = True
             st.session_state.send_as_radio_prev = _current_radio
-        # Same width for chat input and agent rows; each Respond button on the same row as its agent
-        row0_col1, row0_col2 = st.columns([5, 1])
+        # Same width for chat input and agent rows; each Respond button on the same row as its agent (column [4,1] so button fits "Respond" on one line)
+        row0_col1, row0_col2 = st.columns([4, 1])
         with row0_col1:
             human_prompt = st.chat_input("Type a message and press Enter to send")
         # Move focus to chat input after selecting Moderator/Instructor
@@ -415,7 +504,7 @@ def main():
                 unsafe_allow_html=True,
             )
 
-        row1_col1, row1_col2 = st.columns([5, 1])
+        row1_col1, row1_col2 = st.columns([4, 1])
         with row1_col1:
             with st.expander(f"{AGENT_1_NAME} role", expanded=False):
                 with st.form("agent1_role_form"):
@@ -424,12 +513,14 @@ def main():
                         new_role = st.session_state.get("agent1_role_input", st.session_state.agent1_role)
                         st.session_state.agent1_role = new_role
                         st.session_state.agent1_needs_intro = True  # introduce again on next response
-                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", datetime.now()))
+                        _ts = datetime.now()
+                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", _ts))
+                        persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", _ts)
                         st.rerun()
         with row1_col2:
             _render_agent_respond_button("agent1", row1_col2)
 
-        row2_col1, row2_col2 = st.columns([5, 1])
+        row2_col1, row2_col2 = st.columns([4, 1])
         with row2_col1:
             with st.expander(f"{AGENT_2_NAME} role", expanded=False):
                 with st.form("agent2_role_form"):
@@ -438,7 +529,9 @@ def main():
                         new_role = st.session_state.get("agent2_role_input", st.session_state.agent2_role)
                         st.session_state.agent2_role = new_role
                         st.session_state.agent2_needs_intro = True  # introduce again on next response
-                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", datetime.now()))
+                        _ts = datetime.now()
+                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", _ts))
+                        persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", _ts)
                         st.rerun()
         with row2_col2:
             _render_agent_respond_button("agent2", row2_col2)
@@ -449,7 +542,9 @@ def main():
             if st.session_state.get("agent1_thinking", False):
                 with st.spinner(f"{AGENT_1_NAME} thinking…"):
                     reply = call_openai_for_agent(_get_agent_role("agent1"), "agent1")
-                st.session_state.dialogue.append(("agent1", reply, datetime.now()))
+                _ts = datetime.now()
+                st.session_state.dialogue.append(("agent1", reply, _ts))
+                persist_message(st.session_state.get("conversation_id") or "", _speaker_label("agent1"), reply, _ts)
                 st.session_state.agent1_thinking = False
                 st.session_state.agent1_needs_intro = False
                 _pending = st.session_state.get("pending_mention_agents", [])
@@ -465,7 +560,9 @@ def main():
             if st.session_state.get("agent2_thinking", False):
                 with st.spinner(f"{AGENT_2_NAME} thinking…"):
                     reply = call_openai_for_agent(_get_agent_role("agent2"), "agent2")
-                st.session_state.dialogue.append(("agent2", reply, datetime.now()))
+                _ts = datetime.now()
+                st.session_state.dialogue.append(("agent2", reply, _ts))
+                persist_message(st.session_state.get("conversation_id") or "", _speaker_label("agent2"), reply, _ts)
                 st.session_state.agent2_thinking = False
                 st.session_state.agent2_needs_intro = False
                 _pending = st.session_state.get("pending_mention_agents", [])
@@ -485,7 +582,9 @@ def main():
             text = human_prompt.strip()
             if text:
                 text_for_history = _expand_mentions_to_names(text)  # @g / @ j -> real names in history and for OpenAI
-                st.session_state.dialogue.append((role, text_for_history, datetime.now()))
+                _ts = datetime.now()
+                st.session_state.dialogue.append((role, text_for_history, _ts))
+                persist_message(st.session_state.get("conversation_id") or "", _speaker_label(role), text_for_history, _ts)
                 # Agents respond to @-mentions only when the message is from the Moderator, not the Instructor
                 if role == "moderator":
                     mentioned = _mentioned_agents(text)
@@ -495,7 +594,14 @@ def main():
                 st.rerun()
 
     with right_col:
-        st.subheader("Conversation history")
+        hist_col, order_col = st.columns([3, 1])
+        with hist_col:
+            st.subheader("Conversation history")
+        with order_col:
+            if st.session_state.dialogue:
+                if st.button("Reverse order", key="conv_history_reverse_order_btn"):
+                    st.session_state.dialogue_newest_first = not st.session_state.dialogue_newest_first
+                    st.rerun()
         SPEAKER_LABELS = {
             "instructor": "Instructor",
             "moderator": _get_moderator_display_name(),
@@ -516,11 +622,8 @@ def main():
                 if ts:
                     st.caption(ts.strftime("%Y-%m-%d %H:%M"))
         if st.session_state.dialogue:
-            if st.button("Reverse order", key="dialogue_order_btn"):
-                st.session_state.dialogue_newest_first = not st.session_state.dialogue_newest_first
-                st.rerun()
             # Export full conversation in chronological order to a Word document
-            docx_bytes = _export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
+            docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
             st.download_button(
                 "Export to doc",
                 data=docx_bytes,

@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "python-docx>=1.0.0",
     "streamlit>=1.51.0",
+    "supabase>=2.0.0",
     "tavily-python>=0.3.0",
 ]
 

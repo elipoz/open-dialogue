@@ -49,7 +49,7 @@ SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web for current information. Use this when you need facts, recent events, or anything you are unsure about.",
+        "description": "Search the web for up-to-date information. ALWAYS use this for: questions about recent or future events, current facts, dates after your knowledge cutoff, or anything you are unsure about. Do not answer such questions from memory—call web_search first, then answer using the results.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -187,7 +187,12 @@ def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str
     """Build OpenAI messages from the full dialogue in chronological order (oldest first). Each message is attributed so the agent has full context."""
     tools_instruction = ""
     if _get_tavily_client():
-        tools_instruction = "\n\nYou have access to a web_search tool. Use it when you need to look up current information, facts, or events. After receiving search results, use them to inform your response."
+        tools_instruction = (
+            "\n\nYou have access to a web_search tool. You MUST use it whenever the user asks about: "
+            "recent or future events, current facts, or anything after your knowledge cutoff date. "
+            "Do not say you don't have information—call web_search first with a clear query, then answer using the results. "
+            "After receiving search results, use them to inform your response."
+        )
     intro_required = (
         not _agent_has_spoken(speaker)
         or (speaker == "agent1" and st.session_state.get("agent1_needs_intro", False))

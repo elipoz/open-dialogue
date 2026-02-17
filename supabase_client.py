@@ -75,6 +75,18 @@ def load_messages(conversation_id: str) -> list[tuple]:
         return []
 
 
+def conversation_exists(conversation_id: str) -> bool:
+    """Return True if the conversation exists in od_conversations."""
+    sb = get_supabase()
+    if not sb or not conversation_id:
+        return False
+    try:
+        r = sb.table("od_conversations").select("id").eq("id", conversation_id).limit(1).execute()
+        return bool(r.data and len(r.data) > 0)
+    except Exception:
+        return False
+
+
 def delete_conversation(conversation_id: str) -> bool:
     """Delete a conversation and its messages (messages cascade). Returns True if deleted."""
     sb = get_supabase()

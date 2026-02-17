@@ -9,8 +9,9 @@ Agents can use Tavily to search the web when they need up-to-date information.
 import json
 import os
 import re
+import time
 import uuid as uuid_lib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
 
@@ -19,6 +20,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from supabase_client import (
+    conversation_exists,
     create_conversation,
     delete_conversation,
     get_supabase,
@@ -133,6 +135,10 @@ def init_session_state():
         st.session_state.conversation_id = ""
         if "loaded_conversation_id" not in st.session_state:
             st.session_state.loaded_conversation_id = None
+    if "conversation_list_cache_ts" not in st.session_state:
+        st.session_state.conversation_list_cache_ts = 0.0
+    if "conversation_list_cache" not in st.session_state:
+        st.session_state.conversation_list_cache = None
 
 
 def _get_moderator_display_name() -> str:
@@ -172,6 +178,36 @@ def _speaker_label(party: str) -> str:
     """Return display label for a party in the dialogue (moderator uses session moderator_name)."""
     labels = {"instructor": "Instructor", "moderator": _get_moderator_display_name(), "agent1": AGENT_1_NAME, "agent2": AGENT_2_NAME}
     return labels.get(party, party)
+
+
+def _dedupe_conv_list(cache: list | None) -> list:
+    """Return list of conversations with duplicate ids removed (first occurrence kept)."""
+    if not cache:
+        return []
+    seen: set[str] = set()
+    out = []
+    for c in cache:
+        cid = (c.get("id") or "").strip()
+        if cid and cid not in seen:
+            seen.add(cid)
+            out.append(c)
+    return out
+
+
+def _clear_conversation_state(
+    *,
+    invalidate_list_cache: bool = True,
+    clear_query_params: bool = False,
+) -> None:
+    """Clear current conversation from session state. Optionally invalidate sidebar list cache and/or query params."""
+    st.session_state.conversation_id = ""
+    st.session_state.loaded_conversation_id = None
+    st.session_state.dialogue = []
+    if invalidate_list_cache:
+        st.session_state.conversation_list_cache = None
+        st.session_state.conversation_list_cache_ts = 0.0
+    if clear_query_params:
+        st.query_params.clear()
 
 
 def _author_display_name_to_party(author_display_name: str) -> str:
@@ -395,6 +431,9 @@ def main():
         # No conversation_id in URL → create new conversation and put id in URL
         new_id = create_conversation()
         if new_id:
+            _cache = [c for c in (st.session_state.conversation_list_cache or []) if c.get("id") != new_id]
+            st.session_state.conversation_list_cache = [{"id": new_id, "created_at": datetime.now()}] + _cache
+            st.session_state.conversation_list_cache_ts = time.time()
             st.session_state.conversation_id = new_id
             st.session_state.dialogue = []
             st.query_params["conversation_id"] = new_id
@@ -403,6 +442,9 @@ def main():
     else:
         # conversation_id in URL: load entire history if not yet loaded for this conversation
         if st.session_state.get("loaded_conversation_id") != conv_id:
+            if not conversation_exists(conv_id):
+                _clear_conversation_state(clear_query_params=True)
+                st.rerun()
             loaded = load_messages(conv_id)  # (author_display_name, message, ts)
             # Keep original author name as 4th element so history shows who actually posted, not current user
             st.session_state.dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
@@ -429,48 +471,62 @@ def main():
         if st.button("New conversation", key="sidebar_new_conversation", use_container_width=True):
             new_id = create_conversation()
             if new_id:
+                # Prepend new conversation to sidebar list so it shows immediately (avoid duplicate id in list)
+                _cache = [c for c in (st.session_state.conversation_list_cache or []) if c.get("id") != new_id]
+                st.session_state.conversation_list_cache = [{"id": new_id, "created_at": datetime.now()}] + _cache
+                st.session_state.conversation_list_cache_ts = time.time()
                 st.session_state.conversation_id = new_id
                 st.session_state.dialogue = []
                 st.session_state.loaded_conversation_id = None
                 st.query_params["conversation_id"] = new_id
                 st.rerun()
-        conv_list = list_conversations(50)
-        current_id = st.session_state.get("conversation_id") or ""
-        for c in conv_list:
-            cid = c.get("id") or ""
-            if not cid:
-                continue
-            created = c.get("created_at")
-            if hasattr(created, "isoformat"):
-                created_str = created.isoformat()[:19].replace("T", " ")
-            else:
-                created_str = (str(created) if created else "")[:19].replace("T", " ")
-            label = "Conversation · " + created_str
-            if len(label) > 45:
-                label = label[:42] + "..."
-            is_current = cid == current_id
-            row_col, del_col = st.columns([5, 1])
-            with row_col:
-                if st.button(label, key=f"conv_{cid}", use_container_width=True, type="primary" if is_current else "secondary"):
-                    st.query_params["conversation_id"] = cid
-                    st.rerun()
-            with del_col:
-                if st.button("×", key=f"del_{cid}", help="Delete this conversation"):
-                    if delete_conversation(cid):
-                        if cid == current_id:
-                            st.session_state.conversation_id = ""
-                            st.session_state.dialogue = []
-                            st.session_state.loaded_conversation_id = None
-                            st.query_params.clear()
-                            new_id = create_conversation()
-                            if new_id:
-                                st.session_state.conversation_id = new_id
-                                st.query_params["conversation_id"] = new_id
+
+        @st.fragment(run_every=timedelta(seconds=10))
+        def sidebar_conv_list():
+            _now = time.time()
+            if st.session_state.conversation_list_cache is None or (_now - st.session_state.conversation_list_cache_ts) >= 10:
+                st.session_state.conversation_list_cache = _dedupe_conv_list(list_conversations(50))
+                st.session_state.conversation_list_cache_ts = _now
+            conv_list = _dedupe_conv_list(st.session_state.conversation_list_cache)
+            current_id = st.session_state.get("conversation_id") or ""
+            # If current conversation was deleted by another user, clear selection so only one can appear current
+            if current_id and current_id not in {c.get("id") for c in conv_list}:
+                _clear_conversation_state(clear_query_params=True)
+                st.rerun()
+            for c in conv_list:
+                cid = c.get("id") or ""
+                if not cid:
+                    continue
+                created = c.get("created_at")
+                if hasattr(created, "isoformat"):
+                    created_str = created.isoformat()[:19].replace("T", " ")
+                else:
+                    created_str = (str(created) if created else "")[:19].replace("T", " ")
+                label = "Conversation · " + created_str
+                if len(label) > 45:
+                    label = label[:42] + "..."
+                is_current = cid == current_id
+                row_col, del_col = st.columns([5, 1])
+                with row_col:
+                    if st.button(label, key=f"conv_{cid}", use_container_width=True, type="primary" if is_current else "secondary"):
+                        st.query_params["conversation_id"] = cid
                         st.rerun()
-        if not conv_list and get_supabase():
-            st.caption("No conversations yet.")
-        elif not get_supabase():
-            st.caption("Supabase: set SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) in .env to save conversations.")
+                with del_col:
+                    if st.button("×", key=f"del_{cid}", help="Delete this conversation"):
+                        if delete_conversation(cid):
+                            _clear_conversation_state(clear_query_params=(cid == current_id))
+                            if cid == current_id:
+                                new_id = create_conversation()
+                                if new_id:
+                                    st.session_state.conversation_id = new_id
+                                    st.query_params["conversation_id"] = new_id
+                            st.rerun()
+            if not conv_list and get_supabase():
+                st.caption("No conversations yet.")
+            elif not get_supabase():
+                st.caption("Supabase: set SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) in .env to save conversations.")
+
+        sidebar_conv_list()
 
     left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history
 
@@ -599,7 +655,16 @@ def main():
                         st.session_state[f"{mentioned[0]}_thinking"] = True
                 st.rerun()
 
-    with right_col:
+    @st.fragment(run_every=timedelta(seconds=1))
+    def conversation_history_fragment():
+        conv_id = st.session_state.get("conversation_id") or ""
+        if conv_id and get_supabase():
+            if not conversation_exists(conv_id):
+                _clear_conversation_state(clear_query_params=True)
+                st.rerun()
+            loaded = load_messages(conv_id)
+            st.session_state.dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
+            st.session_state.loaded_conversation_id = conv_id
         hist_col, order_col = st.columns([3, 1])
         with hist_col:
             st.subheader("Conversation history")
@@ -628,7 +693,6 @@ def main():
                 if ts:
                     st.caption(ts.strftime("%Y-%m-%d %H:%M"))
         if st.session_state.dialogue:
-            # Export full conversation in chronological order to a Word document
             docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
             _exp_left, _exp_right = st.columns([3, 1])
             with _exp_right:
@@ -639,6 +703,9 @@ def main():
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     key="export_dialogue_btn",
                 )
+
+    with right_col:
+        conversation_history_fragment()
 
 
 if __name__ == "__main__":

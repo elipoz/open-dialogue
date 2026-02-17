@@ -13,7 +13,7 @@ def export_dialogue_to_docx(dialogue: list, speaker_labels: dict) -> bytes:
     for entry in dialogue:
         party, content = entry[0], entry[1]
         ts = entry[2] if len(entry) >= 3 else None
-        label = speaker_labels.get(party, party)
+        label = entry[3] if len(entry) >= 4 and entry[3] else speaker_labels.get(party, party)
         p = doc.add_paragraph()
         run = p.add_run(f"{label}: ")
         run.bold = True

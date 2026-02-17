@@ -357,7 +357,8 @@ def main():
                     st.error("Incorrect password.")
             st.stop()
 
-    st.title("Open Dialogue with AI")
+    _mod_name = (st.session_state.get("moderator_name") or "").strip()
+    st.title(f"{_mod_name}'s Open Dialogue with AI" if _mod_name else "Open Dialogue with AI")
     _tavily = _get_tavily_client()
     _tavily_key_set = bool(os.environ.get("TAVILY_API_KEY"))
     if _tavily:
@@ -399,7 +400,8 @@ def main():
         # conversation_id in URL: load entire history if not yet loaded for this conversation
         if st.session_state.get("loaded_conversation_id") != conv_id:
             loaded = load_messages(conv_id)  # (author_display_name, message, ts)
-            st.session_state.dialogue = [(_author_display_name_to_party(a), m, t) for a, m, t in loaded]
+            # Keep original author name as 4th element so history shows who actually posted, not current user
+            st.session_state.dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
             st.session_state.loaded_conversation_id = conv_id
 
     # CSS: force thinking spinner left-aligned; prevent button text wrapping (e.g. Respond)
@@ -411,7 +413,7 @@ def main():
         div:has([data-testid="stSpinner"]) { justify-content: flex-start !important; }
         [data-testid="stButton"] button { white-space: nowrap !important; }
         .stSidebar [data-testid="stButton"] { margin-top: 0.25rem !important; margin-bottom: 0.25rem !important; }
-        [data-testid="stSidebar"] { min-width: 360px !important; max-width: 440px !important; }
+        [data-testid="stSidebar"][aria-expanded="true"] { min-width: 360px !important; max-width: 440px !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -614,7 +616,7 @@ def main():
         for entry in messages:
             party, content = entry[0], entry[1]
             ts = entry[2] if len(entry) >= 3 else None
-            label = SPEAKER_LABELS.get(party, party)
+            label = entry[3] if len(entry) >= 4 and entry[3] else SPEAKER_LABELS.get(party, party)
             is_human = party in ("instructor", "moderator")
             with st.chat_message("user" if is_human else "assistant"):
                 st.markdown(f"**{label}:**")
@@ -624,13 +626,15 @@ def main():
         if st.session_state.dialogue:
             # Export full conversation in chronological order to a Word document
             docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
-            st.download_button(
-                "Export to doc",
-                data=docx_bytes,
-                file_name="conversation.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                key="export_dialogue_btn",
-            )
+            _exp_left, _exp_right = st.columns([3, 1])
+            with _exp_right:
+                st.download_button(
+                    "Export to doc",
+                    data=docx_bytes,
+                    file_name="conversation.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="export_dialogue_btn",
+                )
 
 
 if __name__ == "__main__":

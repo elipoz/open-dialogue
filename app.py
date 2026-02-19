@@ -21,12 +21,21 @@ _PST = ZoneInfo("America/Los_Angeles")
 
 
 def _format_in_pst(dt, fmt: str = "%Y-%m-%d %H:%M") -> str:
-    """Format a datetime in PST. Naive datetimes are assumed UTC (e.g. from Supabase)."""
+    """Format a datetime in PST. Naive datetimes are assumed UTC. Strings (ISO) parsed as UTC."""
     if dt is None:
         return ""
-    if hasattr(dt, "tzinfo") and dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-    return dt.astimezone(_PST).strftime(fmt)
+    try:
+        if isinstance(dt, str):
+            s = (dt or "").strip().replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(s[:26])  # trim excess fractional seconds
+            except ValueError:
+                return (dt or "")[:19].replace("T", " ")
+        if hasattr(dt, "tzinfo") and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(_PST).strftime(fmt)
+    except Exception:
+        return (str(dt) if dt else "")[:19].replace("T", " ")
 
 
 def _now_pst() -> datetime:
@@ -276,9 +285,45 @@ def _expand_mentions_to_names(text: str) -> str:
     return result
 
 
+def _strip_agent_name_prefix(content: str, agent_name: str) -> str:
+    """Remove leading 'AgentName: ' or 'AgentName:' from reply so the UI label is not duplicated."""
+    if not content or not agent_name:
+        return content
+    text = content.strip()
+    # Strip one or more leading "Name: " / "Name:" (case-insensitive)
+    while True:
+        for prefix in (f"{agent_name}: ", f"{agent_name}:"):
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix):].strip()
+                break
+        else:
+            break
+    return text or content
+
+
 def _agent_has_spoken(speaker: str) -> bool:
     """True if this agent has already posted at least one message in the dialogue."""
     return any(entry[0] == speaker for entry in st.session_state.dialogue)
+
+
+def _sync_agent_intro_state_from_dialogue() -> None:
+    """Set agent*_needs_intro to False if that agent has already posted in the current dialogue (e.g. after loading from DB)."""
+    dialogue = st.session_state.get("dialogue") or []
+    if any(entry[0] == "agent1" for entry in dialogue):
+        st.session_state.agent1_needs_intro = False
+    if any(entry[0] == "agent2" for entry in dialogue):
+        st.session_state.agent2_needs_intro = False
+
+
+def _reload_dialogue_from_db() -> None:
+    """Reload the full conversation history from DB and sync intro state. Keeps all participants in sync."""
+    conv_id = st.session_state.get("conversation_id") or ""
+    if not conv_id or not get_supabase():
+        return
+    loaded = load_messages(conv_id)
+    st.session_state.dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
+    st.session_state.loaded_conversation_id = conv_id
+    _sync_agent_intro_state_from_dialogue()
 
 
 def _render_agent_respond_button(agent_key: str, btn_col) -> None:
@@ -443,30 +488,15 @@ def main():
     else:
         st.caption("Tavily (web search): disabled — TAVILY_API_KEY not in environment. Add it to .env next to app.py (or run from project root).")
 
-    # Supabase: ensure we have a conversation (new or from URL) and load history when opening a link
+    # Supabase: load history when a conversation is selected (from URL or sidebar). New conversations only when user clicks "New conversation".
     conv_id = st.session_state.get("conversation_id") or ""
-    if not conv_id:
-        # No conversation_id in URL → create new conversation and put id in URL
-        new_id = create_conversation()
-        if new_id:
-            _cache = [c for c in (st.session_state.conversation_list_cache or []) if c.get("id") != new_id]
-            st.session_state.conversation_list_cache = [{"id": new_id, "created_at": _now_pst()}] + _cache
-            st.session_state.conversation_list_cache_ts = time.time()
-            st.session_state.conversation_id = new_id
-            st.session_state.dialogue = []
-            st.query_params["conversation_id"] = new_id
-            st.rerun()
-        # If Supabase unavailable, continue without conversation_id (no persistence)
-    else:
-        # conversation_id in URL: load entire history if not yet loaded for this conversation
+    if conv_id:
+        # conversation_id set: load entire history if not yet loaded for this conversation
         if st.session_state.get("loaded_conversation_id") != conv_id:
             if not conversation_exists(conv_id):
                 _clear_conversation_state(clear_query_params=True)
                 st.rerun()
-            loaded = load_messages(conv_id)  # (author_display_name, message, ts)
-            # Keep original author name as 4th element so history shows who actually posted, not current user
-            st.session_state.dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
-            st.session_state.loaded_conversation_id = conv_id
+            _reload_dialogue_from_db()
 
     # CSS: force thinking spinner left-aligned; prevent button text wrapping (e.g. Respond)
     st.markdown(
@@ -516,9 +546,8 @@ def main():
                 if not cid:
                     continue
                 created = c.get("created_at")
-                if hasattr(created, "isoformat"):
-                    created_str = _format_in_pst(created, "%Y-%m-%d %H:%M:%S")
-                else:
+                created_str = _format_in_pst(created, "%Y-%m-%d %H:%M:%S") if created is not None else ""
+                if not created_str and created is not None:
                     created_str = (str(created) if created else "")[:19].replace("T", " ")
                 label = "Conversation · " + created_str
                 if len(label) > 45:
@@ -596,6 +625,7 @@ def main():
                         _ts = datetime.now()
                         st.session_state.dialogue.append(("instructor", f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", _ts))
                         persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", _ts)
+                        _reload_dialogue_from_db()
                         st.rerun()
         with row1_col2:
             _render_agent_respond_button("agent1", row1_col2)
@@ -612,6 +642,7 @@ def main():
                         _ts = datetime.now()
                         st.session_state.dialogue.append(("instructor", f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", _ts))
                         persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", _ts)
+                        _reload_dialogue_from_db()
                         st.rerun()
         with row2_col2:
             _render_agent_respond_button("agent2", row2_col2)
@@ -622,9 +653,11 @@ def main():
             if st.session_state.get("agent1_thinking", False):
                 with st.spinner(f"{AGENT_1_NAME} thinking…"):
                     reply = call_openai_for_agent(_get_agent_role("agent1"), "agent1")
+                reply = _strip_agent_name_prefix(reply, AGENT_1_NAME)
                 _ts = datetime.now()
                 st.session_state.dialogue.append(("agent1", reply, _ts))
                 persist_message(st.session_state.get("conversation_id") or "", _speaker_label("agent1"), reply, _ts)
+                _reload_dialogue_from_db()
                 st.session_state.agent1_thinking = False
                 st.session_state.agent1_needs_intro = False
                 _pending = st.session_state.get("pending_mention_agents", [])
@@ -640,9 +673,11 @@ def main():
             if st.session_state.get("agent2_thinking", False):
                 with st.spinner(f"{AGENT_2_NAME} thinking…"):
                     reply = call_openai_for_agent(_get_agent_role("agent2"), "agent2")
+                reply = _strip_agent_name_prefix(reply, AGENT_2_NAME)
                 _ts = datetime.now()
                 st.session_state.dialogue.append(("agent2", reply, _ts))
                 persist_message(st.session_state.get("conversation_id") or "", _speaker_label("agent2"), reply, _ts)
+                _reload_dialogue_from_db()
                 st.session_state.agent2_thinking = False
                 st.session_state.agent2_needs_intro = False
                 _pending = st.session_state.get("pending_mention_agents", [])
@@ -665,6 +700,7 @@ def main():
                 _ts = datetime.now()
                 st.session_state.dialogue.append((role, text_for_history, _ts))
                 persist_message(st.session_state.get("conversation_id") or "", _speaker_label(role), text_for_history, _ts)
+                _reload_dialogue_from_db()
                 # Agents respond to @-mentions only when the message is from the Moderator, not the Instructor
                 if role == "moderator":
                     mentioned = _mentioned_agents(text)
@@ -680,9 +716,7 @@ def main():
             if not conversation_exists(conv_id):
                 _clear_conversation_state(clear_query_params=True)
                 st.rerun()
-            loaded = load_messages(conv_id)
-            st.session_state.dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
-            st.session_state.loaded_conversation_id = conv_id
+            _reload_dialogue_from_db()
         hist_col, order_col = st.columns([3, 1])
         with hist_col:
             st.subheader("Conversation history")
@@ -704,6 +738,8 @@ def main():
             party, content = entry[0], entry[1]
             ts = entry[2] if len(entry) >= 3 else None
             label = entry[3] if len(entry) >= 4 and entry[3] else SPEAKER_LABELS.get(party, party)
+            if party in ("agent1", "agent2"):
+                content = _strip_agent_name_prefix(content, label)
             is_human = party in ("instructor", "moderator")
             with st.chat_message("user" if is_human else "assistant"):
                 st.markdown(f"**{label}:**")

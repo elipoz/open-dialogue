@@ -294,11 +294,22 @@ def _expand_mentions_to_names(text: str) -> str:
     return result
 
 
+def _strip_at_timestamp_said_prefix(content: str) -> str:
+    """Remove leading 'At YYYY-MM-DD HH:MM Name said: ' from text. Added only when sending to OpenAI; strip if the model echoes it so we never store or display it."""
+    if not content or not content.strip():
+        return content
+    text = content.strip()
+    m = re.match(r"^At\s+\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?:\d{2})?\s+\S+\s+said:\s*", text, re.IGNORECASE)
+    if m:
+        text = text[m.end() :].strip()
+    return text or content
+
+
 def _strip_agent_name_prefix(content: str, agent_name: str) -> str:
     """Remove leading 'AgentName: ' or 'AgentName:' from reply so the UI label is not duplicated."""
     if not content or not agent_name:
         return content
-    text = content.strip()
+    text = _strip_at_timestamp_said_prefix(content).strip()
     # Strip one or more leading "Name: " / "Name:" (case-insensitive)
     while True:
         for prefix in (f"{agent_name}: ", f"{agent_name}:"):

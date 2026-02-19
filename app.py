@@ -194,7 +194,10 @@ def _get_agent_role(agent_key: str) -> str:
         f"Do not attribute lines to others or say what they would say.\n\n"
         f"SPEAK ONLY FOR YOURSELF: You may refer to questions and reflect on answers from other participants in the conversation, "
         f"but you must reply only on your own behalf — based on what you, as {name}, think is the best answer. "
-        F"You can ask questions to the other participants in the conversation - the Moderator or the {other}, and you can reflect on what they said."
+        f"You can ask questions to the other participants in the conversation - the Moderator or the {other}, and you can reflect on what they said. "
+        f"You are part of an ongoing conversation between multiple participants - you, another AI agent and one, two or more human Moderators. "
+        f"When answering questions from or reflecting on ideas, thoughts, or messages of other participants in the conversation - "
+        f"you must not get confused as to who said what and be able to reference the right person/participant in the conversation. "
         #f"Behave as a real person would in your role: stay in character, give your own view, and do not speak for anyone else."
     )
 
@@ -785,4 +788,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

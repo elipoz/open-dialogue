@@ -4,7 +4,9 @@
 
 ## Summary
 
-Open Dialogue with AI — Streamlit app for 3-way dialogue between Instructor, Moderator, and two AI agents (separate OpenAI sessions per agent). Conversations and messages are persisted in Supabase; each conversation has a UUID in the URL.
+Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Moderators, and two AI agents (separate OpenAI sessions per agent). Conversations and messages are persisted in Supabase; each conversation has a UUID in the URL.
+
+**Live app:** https://open-dialogue-with-ai.streamlit.app/
 
 ## Features
 

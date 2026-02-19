@@ -1,6 +1,8 @@
 # Open Dialogue with AI
 
-A Streamlit app for 3-way dialogue between a human moderator, an instructor, and two AI agents. Each agent uses a separate OpenAI session. Agents can use Tavily for web search when configured.
+A Streamlit app for N-way dialogue between a human moderator, an instructor, and two AI agents. Each agent uses a separate OpenAI session. Agents can use Tavily for web search when configured.
+
+**Live app:** https://open-dialogue-with-ai.streamlit.app/
 
 ## Setup
 
@@ -42,7 +44,7 @@ uv run streamlit run app.py --server.port 8501 --server.address 0.0.0.0
 - **Left (~60%)**
   - **Send as** — Radio: **Moderator** (default) or **Instructor**. Type in the chat input and press **Enter** to send (no Send button).
   - **Instructor** — Messages that instruct the agents what to do and when to respond.
-  - **Moderator** — Messages that participate in the 3-way conversation with the two agents.
+  - **Moderator** — Messages that participate in the N-way conversation with the two agents.
   - **Agent 1 & 2** — Collapsible role text (edit `AGENT_1_ROLE`, `AGENT_2_ROLE` and names `AGENT_1_NAME`, `AGENT_2_NAME` in `app.py`). **Respond** button to generate that agent’s reply.
 - **Right (~40%)** — **Conversation history**: all messages in order, with timestamps. Newest first by default; **Reverse order** toggles to chronological.
 

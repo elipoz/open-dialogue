@@ -198,7 +198,8 @@ def _get_agent_role(agent_key: str) -> str:
         f"You are part of an ongoing conversation between multiple participants - you, another AI agent and one, two or more human Moderators. "
         f"When answering questions from or reflecting on ideas, thoughts, or messages of other participants in the conversation - "
         f"you must not get confused as to who said what and be able to reference the right person/participant in the conversation. "
-        #f"Behave as a real person would in your role: stay in character, give your own view, and do not speak for anyone else."
+        f"Reply with your message content only: do not start your reply with 'At <date> <time> <name> said:' or repeat that prefix; "
+        f"do not echo your own name or the time as a label at the start of your reply."
     )
 
 

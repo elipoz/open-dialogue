@@ -354,6 +354,32 @@ def _render_agent_respond_button(agent_key: str, btn_col) -> None:
             st.rerun()
 
 
+def _render_agent_role_row(agent_key: str, agent_name: str, agent_role: str, role_col, button_col) -> None:
+    """Render expander with role form for one agent and the Respond button in the adjacent column."""
+    with role_col:
+        with st.expander(f"{agent_name} role", expanded=False):
+            with st.form(f"{agent_key}_role_form"):
+                st.text_area(
+                    "Role",
+                    value=st.session_state.get(f"{agent_key}_role", agent_role),
+                    height=120,
+                    key=f"{agent_key}_role_input",
+                    label_visibility="collapsed",
+                )
+                if st.form_submit_button("Update role"):
+                    new_role = st.session_state.get(f"{agent_key}_role_input", st.session_state.get(f"{agent_key}_role", agent_role))
+                    st.session_state[f"{agent_key}_role"] = new_role
+                    st.session_state[f"{agent_key}_needs_intro"] = True
+                    _ts = datetime.now()
+                    msg = f"Updated {agent_name}'s role:\n\n{new_role}"
+                    st.session_state.dialogue.append(("instructor", msg, _ts))
+                    persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), msg, _ts)
+                    _reload_dialogue_from_db()
+                    st.rerun()
+    with button_col:
+        _render_agent_respond_button(agent_key, button_col)
+
+
 def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str | None = None) -> list:
     """Build OpenAI messages from the full dialogue in chronological order (oldest first). Each message is attributed so the agent has full context."""
     tools_instruction = ""
@@ -377,11 +403,19 @@ def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str
         )
         tools_instruction += intro
     messages = [{"role": "system", "content": role_prompt + tools_instruction}]
-    # dialogue is always stored chronologically; send to API in that order (party, content, optional timestamp)
+    # dialogue is always stored chronologically; send to API with "At <timestamp> <role> said: <message>" so who said what and when is clear (timestamp = message created_at from DB). Use actual names: moderator = user's name, agents = their display names (Gosha, Joshi, etc.).
     for entry in st.session_state.dialogue:
         party, content = entry[0], entry[1]
-        label = _speaker_label(party)
-        attributed = f"{label}: {content}"
+        ts = entry[2]  # created_at from database, always present
+        author_from_db = entry[3] if len(entry) >= 4 and entry[3] else None
+        label = author_from_db if author_from_db else _speaker_label(party)  # _speaker_label: moderator→moderator_name, agent1/2→AGENT_1_NAME/AGENT_2_NAME, instructor→Instructor
+        # Use current session moderator name when we would otherwise show the generic "Moderator"
+        if party == "moderator" and label == "Moderator":
+            current_name = (st.session_state.get("moderator_name") or "").strip()
+            if current_name:
+                label = current_name
+        formatted_ts = _format_in_pst(ts, "%Y-%m-%d %H:%M")
+        attributed = f"At {formatted_ts} {label} said: {content}"
         if party == speaker:
             messages.append({"role": "assistant", "content": attributed})
         else:
@@ -452,6 +486,31 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> str:
     # After tool rounds, get a final text response (no more tools)
     final = client.chat.completions.create(model="gpt-4o-mini", messages=messages)
     return (final.choices[0].message.content or "").strip()
+
+
+def _run_agent_thinking_if_set(agent_key: str, agent_name: str) -> None:
+    """If this agent's thinking flag is set, call OpenAI, persist reply, clear flag, advance pending mentions if any, then rerun."""
+    if not st.session_state.get(f"{agent_key}_thinking", False):
+        return
+    with st.spinner(f"{agent_name} thinking…"):
+        reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
+    reply = _strip_agent_name_prefix(reply, agent_name)
+    _ts = datetime.now()
+    st.session_state.dialogue.append((agent_key, reply, _ts))
+    persist_message(st.session_state.get("conversation_id") or "", _speaker_label(agent_key), reply, _ts)
+    _reload_dialogue_from_db()
+    st.session_state[f"{agent_key}_thinking"] = False
+    st.session_state[f"{agent_key}_needs_intro"] = False
+    _pending = st.session_state.get("pending_mention_agents", [])
+    if _pending and _pending[0] == agent_key:
+        st.session_state.pending_mention_agents = _pending[1:]
+        if st.session_state.pending_mention_agents:
+            _next = st.session_state.pending_mention_agents[0]
+            st.session_state[f"{_next}_thinking"] = True
+        else:
+            st.session_state.pending_mention_agents = []
+        st.rerun()
+    st.rerun()
 
 
 def main():
@@ -630,82 +689,16 @@ def main():
             )
 
         row1_col1, row1_col2 = st.columns([4, 1])
-        with row1_col1:
-            with st.expander(f"{AGENT_1_NAME} role", expanded=False):
-                with st.form("agent1_role_form"):
-                    st.text_area("Role", value=st.session_state.agent1_role, height=120, key="agent1_role_input", label_visibility="collapsed")
-                    if st.form_submit_button("Update role"):
-                        new_role = st.session_state.get("agent1_role_input", st.session_state.agent1_role)
-                        st.session_state.agent1_role = new_role
-                        st.session_state.agent1_needs_intro = True  # introduce again on next response
-                        _ts = datetime.now()
-                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", _ts))
-                        persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), f"Updated {AGENT_1_NAME}'s role:\n\n{new_role}", _ts)
-                        _reload_dialogue_from_db()
-                        st.rerun()
-        with row1_col2:
-            _render_agent_respond_button("agent1", row1_col2)
+        _render_agent_role_row("agent1", AGENT_1_NAME, AGENT_1_ROLE, row1_col1, row1_col2)
 
         row2_col1, row2_col2 = st.columns([4, 1])
-        with row2_col1:
-            with st.expander(f"{AGENT_2_NAME} role", expanded=False):
-                with st.form("agent2_role_form"):
-                    st.text_area("Role", value=st.session_state.agent2_role, height=120, key="agent2_role_input", label_visibility="collapsed")
-                    if st.form_submit_button("Update role"):
-                        new_role = st.session_state.get("agent2_role_input", st.session_state.agent2_role)
-                        st.session_state.agent2_role = new_role
-                        st.session_state.agent2_needs_intro = True  # introduce again on next response
-                        _ts = datetime.now()
-                        st.session_state.dialogue.append(("instructor", f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", _ts))
-                        persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), f"Updated {AGENT_2_NAME}'s role:\n\n{new_role}", _ts)
-                        _reload_dialogue_from_db()
-                        st.rerun()
-        with row2_col2:
-            _render_agent_respond_button("agent2", row2_col2)
+        _render_agent_role_row("agent2", AGENT_2_NAME, AGENT_2_ROLE, row2_col1, row2_col2)
 
         # Thinking spinner: full-width row so UI stays visible; CSS above forces spinner left-aligned
         _thinking_col, = st.columns([1])
         with _thinking_col:
-            if st.session_state.get("agent1_thinking", False):
-                with st.spinner(f"{AGENT_1_NAME} thinking…"):
-                    reply = call_openai_for_agent(_get_agent_role("agent1"), "agent1")
-                reply = _strip_agent_name_prefix(reply, AGENT_1_NAME)
-                _ts = datetime.now()
-                st.session_state.dialogue.append(("agent1", reply, _ts))
-                persist_message(st.session_state.get("conversation_id") or "", _speaker_label("agent1"), reply, _ts)
-                _reload_dialogue_from_db()
-                st.session_state.agent1_thinking = False
-                st.session_state.agent1_needs_intro = False
-                _pending = st.session_state.get("pending_mention_agents", [])
-                if _pending and _pending[0] == "agent1":
-                    st.session_state.pending_mention_agents = _pending[1:]
-                    if st.session_state.pending_mention_agents:
-                        _next = st.session_state.pending_mention_agents[0]
-                        st.session_state[f"{_next}_thinking"] = True
-                    else:
-                        st.session_state.pending_mention_agents = []
-                    st.rerun()
-                st.rerun()
-            if st.session_state.get("agent2_thinking", False):
-                with st.spinner(f"{AGENT_2_NAME} thinking…"):
-                    reply = call_openai_for_agent(_get_agent_role("agent2"), "agent2")
-                reply = _strip_agent_name_prefix(reply, AGENT_2_NAME)
-                _ts = datetime.now()
-                st.session_state.dialogue.append(("agent2", reply, _ts))
-                persist_message(st.session_state.get("conversation_id") or "", _speaker_label("agent2"), reply, _ts)
-                _reload_dialogue_from_db()
-                st.session_state.agent2_thinking = False
-                st.session_state.agent2_needs_intro = False
-                _pending = st.session_state.get("pending_mention_agents", [])
-                if _pending and _pending[0] == "agent2":
-                    st.session_state.pending_mention_agents = _pending[1:]
-                    if st.session_state.pending_mention_agents:
-                        _next = st.session_state.pending_mention_agents[0]
-                        st.session_state[f"{_next}_thinking"] = True
-                    else:
-                        st.session_state.pending_mention_agents = []
-                    st.rerun()
-                st.rerun()
+            _run_agent_thinking_if_set("agent1", AGENT_1_NAME)
+            _run_agent_thinking_if_set("agent2", AGENT_2_NAME)
 
         # @mention: use same thinking path as Respond so spinner always appears in the same place
         if human_prompt:

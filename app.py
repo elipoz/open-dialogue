@@ -12,6 +12,7 @@ import re
 import time
 import uuid as uuid_lib
 from datetime import datetime, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import streamlit as st
@@ -159,8 +160,12 @@ def init_session_state():
             st.session_state.dialogue = []
             st.session_state.loaded_conversation_id = None
     else:
-        st.session_state.conversation_id = ""
-        if "loaded_conversation_id" not in st.session_state:
+        # Only clear when URL had an invalid param; when param is missing, keep session state (query params can be dropped on reruns)
+        if _param_id:
+            st.session_state.conversation_id = ""
+            if "loaded_conversation_id" not in st.session_state:
+                st.session_state.loaded_conversation_id = None
+        elif "loaded_conversation_id" not in st.session_state:
             st.session_state.loaded_conversation_id = None
     if "conversation_list_cache_ts" not in st.session_state:
         st.session_state.conversation_list_cache_ts = 0.0
@@ -306,13 +311,24 @@ def _agent_has_spoken(speaker: str) -> bool:
     return any(entry[0] == speaker for entry in st.session_state.dialogue)
 
 
-def _sync_agent_intro_state_from_dialogue() -> None:
-    """Set agent*_needs_intro to False if that agent has already posted in the current dialogue (e.g. after loading from DB)."""
-    dialogue = st.session_state.get("dialogue") or []
+def _sync_agent_intro_state_from_dialogue(dialogue: Optional[list] = None) -> None:
+    """Set agent*_needs_intro to False if that agent has already posted. Uses provided dialogue or session state (e.g. after loading from DB)."""
+    if dialogue is None:
+        dialogue = st.session_state.get("dialogue") or []
     if any(entry[0] == "agent1" for entry in dialogue):
         st.session_state.agent1_needs_intro = False
     if any(entry[0] == "agent2" for entry in dialogue):
         st.session_state.agent2_needs_intro = False
+
+
+def _dialogue_equals(current: list, new_dialogue: list) -> bool:
+    """Quick check: same length and same last message (party, content) means no visible change."""
+    if len(current) != len(new_dialogue):
+        return False
+    if not current:
+        return True
+    c_last, n_last = current[-1], new_dialogue[-1]
+    return (c_last[0], c_last[1]) == (n_last[0], n_last[1])
 
 
 def _reload_dialogue_from_db() -> None:
@@ -438,43 +454,40 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> str:
 def main():
     st.set_page_config(page_title="Open Dialogue with AI", page_icon="💬", layout="wide")
 
-    # Password gate (only when APP_PASSWORD is set and not running locally)
-    if _require_password():
-        if "authenticated" not in st.session_state:
-            st.session_state.authenticated = False
-        if not st.session_state.authenticated:
-            st.title("Open Dialogue with AI")
-            st.caption("Enter the app password and press Enter to continue.")
-            with st.form("password_form"):
-                pwd = st.text_input("Password", type="password", key="password_input", label_visibility="collapsed", placeholder="Password")
-                submitted = st.form_submit_button("Submit")
-            if submitted:
-                if pwd and pwd == os.environ.get("APP_PASSWORD"):
-                    st.session_state.authenticated = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect password.")
-            st.stop()
+    init_session_state()
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
 
     _mod_name = (st.session_state.get("moderator_name") or "").strip()
-    st.title(f"{_mod_name}'s Open Dialogue with AI" if _mod_name else "Open Dialogue with AI")
+    _need_password = _require_password() and not st.session_state.authenticated
+    _need_name = not _mod_name
 
-    init_session_state()
-
-    # Moderator must state their name before any conversation; all fields hidden until then
-    if not _mod_name:
-        st.markdown('<p style="font-size: 1.25rem; color: #000000; font-weight: 500;">State your name as the moderator to start.</p>', unsafe_allow_html=True)
-        _name_col, _ = st.columns([1, 3])  # shorten the text box
-        with _name_col:
-            with st.form("moderator_name_form"):
-                mod_name = st.text_input("Your name (as moderator)", key="moderator_name_input", placeholder="Enter your name", label_visibility="collapsed", max_chars=15)
-                if st.form_submit_button("Start"):
-                    if (mod_name or "").strip():
-                        st.session_state.moderator_name = (mod_name or "").strip()[:15]
-                        st.rerun()
-                    else:
-                        st.error("Please enter a non-empty name.")
+    # Combined gate: name (required) + password (if not running locally) + Submit
+    if _need_name or _need_password:
+        st.title("Open Dialogue with AI")
+        st.markdown('<p style="font-size: 1.25rem; color: #000000; font-weight: 500;">To start a dialogue - state your name</p>', unsafe_allow_html=True)
+        with st.form("login_form"):
+            mod_name = st.text_input("Your name (as moderator)", key="moderator_name_input", placeholder="Enter your name", max_chars=15)
+            if _need_password:
+                pwd = st.text_input("Password", type="password", key="password_input", placeholder="App password")
+            else:
+                pwd = ""
+            submitted = st.form_submit_button("Submit")
+        if submitted:
+            name_ok = (mod_name or "").strip()
+            if not name_ok:
+                st.error("Please enter a non-empty name.")
+            elif _need_password and (not pwd or pwd != os.environ.get("APP_PASSWORD")):
+                st.error("Incorrect password.")
+            else:
+                if name_ok:
+                    st.session_state.moderator_name = name_ok[:15]
+                if _need_password:
+                    st.session_state.authenticated = True
+                st.rerun()
         st.stop()
+
+    st.title(f"{_mod_name}'s Open Dialogue with AI")
 
     # Tavily caption only after name is set (not on the name-entry page)
     _tavily = _get_tavily_client()
@@ -537,8 +550,8 @@ def main():
                 st.session_state.conversation_list_cache_ts = _now
             conv_list = _dedupe_conv_list(st.session_state.conversation_list_cache)
             current_id = st.session_state.get("conversation_id") or ""
-            # If current conversation was deleted by another user, clear selection so only one can appear current
-            if current_id and current_id not in {c.get("id") for c in conv_list}:
+            # If current conversation was deleted by another user, clear selection. Don't clear when list is empty (e.g. refetch failed).
+            if current_id and conv_list and current_id not in {c.get("id") for c in conv_list}:
                 _clear_conversation_state(clear_query_params=True)
                 st.rerun()
             for c in conv_list:
@@ -709,14 +722,22 @@ def main():
                         st.session_state[f"{mentioned[0]}_thinking"] = True
                 st.rerun()
 
-    @st.fragment(run_every=timedelta(seconds=1))
+    @st.fragment(run_every=timedelta(seconds=2))
     def conversation_history_fragment():
         conv_id = st.session_state.get("conversation_id") or ""
         if conv_id and get_supabase():
             if not conversation_exists(conv_id):
                 _clear_conversation_state(clear_query_params=True)
                 st.rerun()
-            _reload_dialogue_from_db()
+            # Only update dialogue when it actually changed to reduce blink/focus reset from redundant redraws
+            loaded = load_messages(conv_id)
+            new_dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
+            current = st.session_state.get("dialogue") or []
+            if not _dialogue_equals(current, new_dialogue):
+                st.session_state.dialogue = new_dialogue
+                st.session_state.loaded_conversation_id = conv_id
+            # Always sync intro flags from loaded history so agents don't re-introduce (e.g. after another user's message)
+            _sync_agent_intro_state_from_dialogue(new_dialogue)
         hist_col, order_col = st.columns([3, 1])
         with hist_col:
             st.subheader("Conversation history")

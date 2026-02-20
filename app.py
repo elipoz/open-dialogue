@@ -40,8 +40,8 @@ def _is_streamlit_cloud() -> bool:
 
 
 def _require_password() -> bool:
-    """True when on Streamlit Cloud and APP_PASSWORD is set (skip when running locally)."""
-    return _is_streamlit_cloud() and bool(os.environ.get("APP_PASSWORD"))
+    """True when on Streamlit Cloud (skip when running locally)."""
+    return _is_streamlit_cloud()
 
 
 # Optional Tavily client for web search (requires TAVILY_API_KEY in .env)
@@ -533,15 +533,30 @@ def main():
             name_ok = (mod_name or "").strip()
             if not name_ok:
                 st.error("Please enter a non-empty name.")
-            elif _need_password and (not pwd or pwd != os.environ.get("APP_PASSWORD")):
-                st.error("Incorrect password.")
+            elif _need_password:
+                is_admin_login = name_ok.lower() == "admin"
+                expected = os.environ.get("APP_ADMIN_PASSWORD") if is_admin_login else os.environ.get("APP_PASSWORD")
+                if not pwd or not expected or pwd != expected:
+                    st.error("Incorrect password.")
+                else:
+                    if name_ok:
+                        st.session_state.moderator_name = name_ok[:15]
+                    st.session_state.authenticated = True
+                    st.rerun()
             else:
                 if name_ok:
                     st.session_state.moderator_name = name_ok[:15]
-                if _need_password:
-                    st.session_state.authenticated = True
                 st.rerun()
         st.stop()
+
+    # Load conversation history from DB before title/participants so Participants list is correct on join
+    conv_id = st.session_state.get("conversation_id") or ""
+    if conv_id:
+        if st.session_state.get("loaded_conversation_id") != conv_id:
+            if not conversation_exists(conv_id):
+                _clear_conversation_state(clear_query_params=True)
+                st.rerun()
+            _reload_dialogue_from_db()
 
     st.title(f"{_mod_name}'s Open Dialogue with AI")
 
@@ -556,16 +571,6 @@ def main():
         st.caption("Tavily (web search): disabled — key set but client failed. Check that tavily-python is installed.")
     else:
         st.caption("Tavily (web search): disabled — TAVILY_API_KEY not in environment. Add it to .env next to app.py (or run from project root).")
-
-    # Supabase: load history when a conversation is selected (from URL or sidebar). New conversations only when user clicks "New conversation".
-    conv_id = st.session_state.get("conversation_id") or ""
-    if conv_id:
-        # conversation_id set: load entire history if not yet loaded for this conversation
-        if st.session_state.get("loaded_conversation_id") != conv_id:
-            if not conversation_exists(conv_id):
-                _clear_conversation_state(clear_query_params=True)
-                st.rerun()
-            _reload_dialogue_from_db()
 
     # CSS: force thinking spinner left-aligned; prevent button text wrapping (e.g. Respond)
     st.markdown(
@@ -629,7 +634,7 @@ def main():
                         st.rerun()
                 with del_col:
                     can_delete = _get_moderator_display_name().strip().lower() == "admin"
-                    if st.button("×", key=f"del_{cid}", help="Delete this conversation", disabled=not can_delete):
+                    if st.button("×", key=f"del_{cid}", help="Delete conversation", disabled=not can_delete):
                         if delete_conversation(cid):
                             _clear_conversation_state(clear_query_params=(cid == current_id))
                             if cid == current_id:
@@ -645,8 +650,18 @@ def main():
 
         sidebar_conv_list()
 
-        # Request / response log at bottom of sidebar so it doesn't overlap the thinking spinner in the main panel
         st.divider()
+        # Participants: human users who posted in this conversation
+        _dialogue = st.session_state.get("dialogue") or []
+        _human_authors = sorted({e[3] for e in _dialogue if e[0] in ("moderator", "instructor") and len(e) >= 4 and e[3]})
+        with st.expander("Participants", expanded=False):
+            if _human_authors:
+                for _name in _human_authors:
+                    st.markdown(f"- **{_name}**")
+            else:
+                st.caption("No human messages yet.")
+
+        # Request / response log at bottom of sidebar so it doesn't overlap the thinking spinner in the main panel
         entry = st.session_state.get("openai_request_log")
         with st.expander("Request / response log", expanded=bool(entry)):
             if entry:
@@ -756,20 +771,28 @@ def main():
                 st.session_state.loaded_conversation_id = conv_id
             # Always sync intro flags from loaded history so agents don't re-introduce (e.g. after another user's message)
             _sync_agent_intro_state_from_dialogue(new_dialogue)
-        hist_col, order_col = st.columns([3, 1])
-        with hist_col:
-            st.subheader("Conversation history")
-        with order_col:
-            if st.session_state.dialogue:
-                if st.button("Reverse order", key="conv_history_reverse_order_btn"):
-                    st.session_state.dialogue_newest_first = not st.session_state.dialogue_newest_first
-                    st.rerun()
         SPEAKER_LABELS = {
             "instructor": "Instructor",
             "moderator": _get_moderator_display_name(),
             "agent1": AGENT_1_NAME,
             "agent2": AGENT_2_NAME,
         }
+        if st.session_state.dialogue:
+            order_col, export_col = st.columns([3, 1])
+            with order_col:
+                if st.button("Reverse order", key="conv_history_reverse_order_btn"):
+                    st.session_state.dialogue_newest_first = not st.session_state.dialogue_newest_first
+                    st.rerun()
+            with export_col:
+                docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
+                st.download_button(
+                    "Export to doc",
+                    data=docx_bytes,
+                    file_name="conversation.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="export_dialogue_btn",
+                )
+        st.subheader("Conversation history")
         if not st.session_state.dialogue:
             st.caption("No messages yet. Send an instructor or moderator message, or generate an agent response.")
         messages = reversed(st.session_state.dialogue) if st.session_state.dialogue_newest_first else st.session_state.dialogue
@@ -785,17 +808,6 @@ def main():
                 st.markdown(content)
                 if ts:
                     st.caption(_format_in_pst(ts, "%Y-%m-%d %H:%M"))
-        if st.session_state.dialogue:
-            docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
-            _exp_left, _exp_right = st.columns([3, 1])
-            with _exp_right:
-                st.download_button(
-                    "Export to doc",
-                    data=docx_bytes,
-                    file_name="conversation.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key="export_dialogue_btn",
-                )
 
     with right_col:
         conversation_history_fragment()

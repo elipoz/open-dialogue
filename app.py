@@ -109,6 +109,9 @@ def _get_agent_role(agent_key: str, moderator_name: str) -> str:
         f"When answering questions from or reflecting on ideas, thoughts, or messages of other participants in the conversation - "
         f"you must not get confused as to who said what and be able to reference the right person/participant in the conversation. "
         f"Be creative in your responses, don't just echo what others have said. Respond with your own unique perspective and ideas. "
+        f"Take a different perspective from the other agent ({other}) when relevant: add a distinct angle, disagree where you genuinely do, "
+        f"or emphasize different aspects; do not simply rephrase or echo what they said. "
+        f"Be creative in your responses; respond with your own unique perspective and ideas. Search the web for up-to-date information when relevant to the conversation."
         f"Apply critical thinking to decide what previous messages in the conversation history to respond to and reflect upon, pickiung the most relevant ones. "
         f"Never reply to or reflect upon what the Instructor have said. Whatever Instructor says is a directive or prompt to tune, restrict or modify your "
         f"responses to other participants in the future. It defines and refines who you are and what your role, behavior and response type should be going forward. "
@@ -170,6 +173,8 @@ def init_session_state():
         st.session_state.conversation_list_cache_ts = 0.0
     if "conversation_list_cache" not in st.session_state:
         st.session_state.conversation_list_cache = None
+    if "openai_request_log" not in st.session_state:
+        st.session_state.openai_request_log = None  # latest {agent, messages, response, ts} only
 
 
 def _get_moderator_display_name() -> str:
@@ -431,22 +436,35 @@ def _run_tavily_search(query: str) -> str:
         return f"Search failed: {e}"
 
 
-def call_openai_for_agent(role_prompt: str, speaker: str) -> str:
-    """Call OpenAI chat completion for the given agent (separate session per agent; no shared state). Agents can use web_search tool if Tavily is configured."""
+def _log_openai_request(speaker: str, messages: list, response_text: str) -> None:
+    """Store the latest request/response only (overwrites previous). Use ISO ts for session state."""
+    sanitized = [{"role": m.get("role"), "content": (m.get("content") or "")[:8000]} for m in messages]
+    now = datetime.now(ZoneInfo("UTC"))
+    st.session_state.openai_request_log = {
+        "agent": speaker,
+        "messages": sanitized,
+        "response": response_text[:8000] if response_text else "",
+        "ts": now.isoformat(),
+    }
+
+
+def call_openai_for_agent(role_prompt: str, speaker: str) -> tuple[str, list]:
+    """Call OpenAI chat completion for the given agent. Returns (reply_text, messages_sent) so caller can log request/response."""
     role_text_only = _get_agent_role_text_only(speaker)
     messages = build_messages_for_agent(role_prompt, speaker, role_text_only=role_text_only)
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))  # new client per call; each agent has its own independent request
     tools = [SEARCH_TOOL] if _get_tavily_client() else None
     max_tool_rounds = 5
     for _ in range(max_tool_rounds):
-        kwargs = {"model": "gpt-4o-mini", "messages": messages}
+        kwargs = {"model": "gpt-5-mini", "messages": messages, "temperature": 0.7}
         if tools:
             kwargs["tools"] = tools
         response = client.chat.completions.create(**kwargs)
         choice = response.choices[0]
         msg = choice.message
         if not getattr(msg, "tool_calls", None):
-            return (msg.content or "").strip()
+            reply = (msg.content or "").strip()
+            return (reply, messages)
         # Append assistant message with tool_calls
         messages.append({
             "role": "assistant",
@@ -465,16 +483,18 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> str:
                 result = f"Unknown tool: {name}"
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
     # After tool rounds, get a final text response (no more tools)
-    final = client.chat.completions.create(model="gpt-4o-mini", messages=messages)
-    return (final.choices[0].message.content or "").strip()
+    final = client.chat.completions.create(model="gpt-5-mini", messages=messages, temperature=0.7)
+    reply = (final.choices[0].message.content or "").strip()
+    return (reply, messages)
 
 
 def _run_agent_thinking_if_set(agent_key: str, agent_name: str) -> None:
-    """If this agent's thinking flag is set, call OpenAI, persist reply, clear flag, advance pending mentions if any, then rerun."""
+    """If this agent's thinking flag is set, call OpenAI, log request/response, persist reply, clear flag, advance pending mentions if any, then rerun."""
     if not st.session_state.get(f"{agent_key}_thinking", False):
         return
     with st.spinner(f"{agent_name} thinking…"):
-        reply = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name()), agent_key)
+        reply, messages = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name()), agent_key)
+    _log_openai_request(agent_key, messages, reply)
     reply = _strip_agent_name_prefix(reply, agent_name)
     _ts = datetime.now(_UTC)
     st.session_state.dialogue.append((agent_key, reply, _ts))
@@ -630,6 +650,31 @@ def main():
                 st.caption("Supabase: set SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) in .env to save conversations.")
 
         sidebar_conv_list()
+
+        # Request / response log at bottom of sidebar so it doesn't overlap the thinking spinner in the main panel
+        st.divider()
+        entry = st.session_state.get("openai_request_log")
+        with st.expander("Request / response log", expanded=bool(entry)):
+            if entry:
+                lines = []
+                agent_name = _speaker_label(entry.get("agent", ""))
+                ts = entry.get("ts")
+                ts_str = _format_in_pst(ts, "%Y-%m-%d %H:%M:%S") if ts else ""
+                lines.append(f"=== {agent_name} — {ts_str} ===")
+                lines.append("Request (messages sent):")
+                for m in entry.get("messages", []):
+                    role = m.get("role", "")
+                    content = (m.get("content") or "").strip()
+                    content_preview = content[:2000] + "..." if len(content) > 2000 else content
+                    lines.append(f"  [{role}]\n  {content_preview}")
+                lines.append("Response:")
+                resp = entry.get("response", "")
+                resp_preview = resp[:2000] + "..." if len(resp) > 2000 else resp
+                lines.append(f"  {resp_preview}")
+                log_text = "\n".join(lines)
+            else:
+                log_text = "No requests yet."
+            st.text_area("Log", value=log_text, height=300, label_visibility="collapsed", disabled=True)
 
     left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history
 

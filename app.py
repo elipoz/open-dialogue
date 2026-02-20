@@ -628,7 +628,8 @@ def main():
                         st.query_params["conversation_id"] = cid
                         st.rerun()
                 with del_col:
-                    if st.button("×", key=f"del_{cid}", help="Delete this conversation"):
+                    can_delete = _get_moderator_display_name().strip().lower() == "admin"
+                    if st.button("×", key=f"del_{cid}", help="Delete this conversation", disabled=not can_delete):
                         if delete_conversation(cid):
                             _clear_conversation_state(clear_query_params=(cid == current_id))
                             if cid == current_id:

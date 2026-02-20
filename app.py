@@ -110,7 +110,7 @@ def _get_agent_role(agent_key: str, moderator_name: str) -> str:
         f"you must not get confused as to who said what and be able to reference the right person/participant in the conversation. "
         f"Apply critical thinking to decide what previous messages in the conversation history to respond to and reflect upon, pickiung the most relevant ones. "
         f"Reply with your message content only: do not start your reply with 'At <date> <time> <name> said:' or repeat that prefix; "
-        f"do not echo your own name or the time as a label at the start of your reply."
+        f"do not echo your own name or the time of your reply at the start of your response message."
     )
 
 
@@ -353,7 +353,7 @@ def _render_agent_role_row(agent_key: str, agent_name: str, agent_role: str, rol
                     new_role = st.session_state.get(f"{agent_key}_role_input", st.session_state.get(f"{agent_key}_role", agent_role))
                     st.session_state[f"{agent_key}_role"] = new_role
                     st.session_state[f"{agent_key}_needs_intro"] = True
-                    _ts = datetime.now()
+                    _ts = datetime.now(_UTC)
                     msg = f"Updated {agent_name}'s role:\n\n{new_role}"
                     st.session_state.dialogue.append(("instructor", msg, _ts))
                     persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), msg, _ts)
@@ -473,7 +473,7 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str) -> None:
     with st.spinner(f"{agent_name} thinking…"):
         reply = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name()), agent_key)
     reply = _strip_agent_name_prefix(reply, agent_name)
-    _ts = datetime.now()
+    _ts = datetime.now(_UTC)
     st.session_state.dialogue.append((agent_key, reply, _ts))
     persist_message(st.session_state.get("conversation_id") or "", _speaker_label(agent_key), reply, _ts)
     _reload_dialogue_from_db()
@@ -684,7 +684,7 @@ def main():
             text = human_prompt.strip()
             if text:
                 text_for_history = _expand_mentions_to_names(text)  # @g / @ j -> real names in history and for OpenAI
-                _ts = datetime.now()
+                _ts = datetime.now(_UTC)
                 st.session_state.dialogue.append((role, text_for_history, _ts))
                 persist_message(st.session_state.get("conversation_id") or "", _speaker_label(role), text_for_history, _ts)
                 _reload_dialogue_from_db()
@@ -757,7 +757,8 @@ def main():
         conversation_history_fragment()
 
 
-# All UI timestamps shown in PST
+# All UI timestamps shown in PST; store in Supabase as UTC so all users have consistent timestamps
+_UTC = ZoneInfo("UTC")
 _PST = ZoneInfo("America/Los_Angeles")
 
 

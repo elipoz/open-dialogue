@@ -6,6 +6,9 @@ Requires SUPABASE_URL and either SUPABASE_KEY or SUPABASE_SERVICE_ROLE_KEY in th
 import os
 import uuid as uuid_lib
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_UTC = ZoneInfo("UTC")
 
 _supabase_client = None
 
@@ -100,13 +103,20 @@ def delete_conversation(conversation_id: str) -> bool:
 
 
 def persist_message(conversation_id: str, author_display_name: str, message: str, created_at: datetime | None = None) -> None:
-    """Insert one message into od_messages. role column = author_display_name (human or agent name). No-op if Supabase unavailable."""
+    """Insert one message into od_messages. role column = author_display_name (human or agent name).
+       The created_at is stored in UTC so all users have consistent timestamps.
+       No-op if Supabase unavailable."""
     sb = get_supabase()
     if not sb or not conversation_id:
         return
     try:
         payload = {"conversation_id": conversation_id, "role": author_display_name, "message": message}
         if created_at is not None:
+            # Always store in UTC: normalize so Postgres timestamptz is unambiguous (avoids mixed UTC/PST from different app hosts)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=_UTC)
+            else:
+                created_at = created_at.astimezone(_UTC)
             payload["created_at"] = created_at.isoformat()
         sb.table("od_messages").insert(payload).execute()
     except Exception:

@@ -6,6 +6,8 @@
 
 Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Moderators, and two AI agents (separate OpenAI sessions per agent). Conversations and messages are persisted in Supabase; each conversation has a UUID in the URL.
 
+**Recent:** Agent reply streams only inside the **Conversation history** panel (as a chat message in the same list as previous messages). Streaming uses plain text in the placeholder to avoid brief font/size jumps from partial markdown; the final message in history still renders with full markdown.
+
 **Live app:** https://open-dialogue-with-ai.streamlit.app/
 
 ## Features
@@ -14,7 +16,8 @@ Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Mode
 - **Send as:** Moderator (default) or Instructor. Single chat input; press Enter to send. Role keys use constants `ROLE_MODERATOR` / `ROLE_INSTRUCTOR` in code.
 - **Two agents:** Configurable names and roles in `app.py` (e.g. Gosha, Joshi). Agent name is fixed; only role text is editable. Collapsible role expander and **Respond** button per agent. OpenAI prompts enforce fixed identity: each agent must speak only for themselves, never as Instructor/Moderator/other agent.
 - **Agent intro:** Each agent states name and role on first reply and again after its role is updated.
-- **Thinking spinner:** One place for both flows — **Respond** or @mention; "agent thinking…" appears in the same full-width row below the agent rows.
+- **Thinking spinner:** One place for both flows — **Respond** or @mention; "agent thinking…" appears in the same full-width row below the agent rows. Agent reply text streams only in the right column inside **Conversation history** (as a chat bubble in the message list), not under the spinner.
+- **Streaming:** Reply is streamed into a placeholder inside the conversation history list (same `st.chat_message` style). Placeholder uses plain text during stream to avoid font/size glitches from partial markdown; saved message in history is rendered with markdown.
 - **@mentions:** When **Moderator** posts a message that @-mentions an agent, that agent is triggered (every time; no suppression). **Respond** button also triggers. Instructor messages never trigger agents; we clear agent thinking on every new message, then set from @mention only when role is Moderator. Mention pattern: `@` (optional space) then first letter or any prefix of name (e.g. `@g`, `@ gosha`). Stored text is expanded to full agent names in history and for OpenAI.
 - **Layout:** Sidebar with conversations list, divider, **Participants** expander (human users who posted as Moderator only; Instructor not listed), **Request / response log**. Main: 50% left (controls + spinner), 50% right (conversation history). Above "Conversation history" subheader: **Reverse order** (left) and **Export to doc** (right) when there is dialogue.
 - **Conversation history:** Right panel, newest first by default; **Reverse order** toggles; timestamps; each message shows the original poster’s name (DB author or current user for new messages). **Export to doc** downloads full conversation as .docx (via `doc_export.py`). Dialogue loaded from DB before title so Participants list is correct on join.

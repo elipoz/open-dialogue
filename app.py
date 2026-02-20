@@ -461,14 +461,37 @@ def _log_openai_request(speaker: str, messages: list, response_text: str) -> Non
     }
 
 
-def call_openai_for_agent(role_prompt: str, speaker: str) -> tuple[str, list]:
-    """Call OpenAI chat completion for the given agent. Returns (reply_text, messages_sent) so caller can log request/response."""
+def _stream_chat_completion(client, messages: list, tools: list | None, placeholder) -> str:
+    """Run a streaming chat completion; update placeholder with accumulated text. Returns full reply text. No tool_calls in messages.
+    Uses plain text for the stream so partial markdown (headings, lists, **) never causes font/size jumps."""
+    kwargs = {"model": "gpt-5-mini", "messages": messages, "stream": True}
+    if tools:
+        kwargs["tools"] = tools
+    stream = client.chat.completions.create(**kwargs)
+    accumulated = ""
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        content = getattr(delta, "content", None) or (delta.get("content") if isinstance(delta, dict) else None)
+        if content:
+            accumulated += content
+            placeholder.text(accumulated)
+    return accumulated.strip()
+
+
+def call_openai_for_agent(role_prompt: str, speaker: str, stream_placeholder=None) -> tuple[str, list]:
+    """Call OpenAI chat completion for the given agent. Returns (reply_text, messages_sent). If stream_placeholder is set, stream the final text into it."""
     role_text_only = _get_agent_role_text_only(speaker)
     messages = build_messages_for_agent(role_prompt, speaker, role_text_only=role_text_only)
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))  # new client per call; each agent has its own independent request
     tools = [SEARCH_TOOL] if _get_tavily_client() else None
     max_tool_rounds = 5
     for _ in range(max_tool_rounds):
+        # When no tools and streaming requested, use stream=True for typed effect; otherwise non-stream to handle tool_calls
+        if not tools and stream_placeholder:
+            reply = _stream_chat_completion(client, messages, None, stream_placeholder)
+            return (reply, messages)
         kwargs = {"model": "gpt-5-mini", "messages": messages}
         if tools:
             kwargs["tools"] = tools
@@ -477,6 +500,11 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> tuple[str, list]:
         msg = choice.message
         if not getattr(msg, "tool_calls", None):
             reply = (msg.content or "").strip()
+            if stream_placeholder and reply:
+                # Already have full content (e.g. from tool round); typewriter effect (plain text to avoid font glitches)
+                for i in range(1, len(reply) + 1):
+                    stream_placeholder.text(reply[:i])
+                    time.sleep(0.01)
             return (reply, messages)
         messages.append({
             "role": "assistant",
@@ -495,17 +523,20 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> tuple[str, list]:
                 result = f"Unknown tool: {name}"
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
     # After tool rounds, get a final text response (no more tools)
-    final = client.chat.completions.create(model="gpt-5-mini", messages=messages)
-    reply = (final.choices[0].message.content or "").strip()
+    if stream_placeholder:
+        reply = _stream_chat_completion(client, messages, None, stream_placeholder)
+    else:
+        final = client.chat.completions.create(model="gpt-5-mini", messages=messages)
+        reply = (final.choices[0].message.content or "").strip()
     return (reply, messages)
 
 
-def _run_agent_thinking_if_set(agent_key: str, agent_name: str) -> None:
+def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placeholder=None) -> None:
     """If this agent's thinking flag is set, call OpenAI, log request/response, persist reply, clear flag, advance pending mentions if any, then rerun."""
     if not st.session_state.get(f"{agent_key}_thinking", False):
         return
     with st.spinner(f"{agent_name} thinking…"):
-        reply, messages = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name()), agent_key)
+        reply, messages = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name()), agent_key, stream_placeholder=stream_placeholder)
     _log_openai_request(agent_key, messages, reply)
     reply = _strip_agent_name_prefix(reply, agent_name)
     _ts = datetime.now(_UTC)
@@ -706,7 +737,81 @@ def main():
             else:
                 st.caption("No requests yet. Use Respond or @mention an agent to see request/response here.")
 
+    @st.fragment(run_every=timedelta(seconds=2))
+    def conversation_history_fragment():
+        conv_id = st.session_state.get("conversation_id") or ""
+        if conv_id and get_supabase():
+            if not conversation_exists(conv_id):
+                _clear_conversation_state(clear_query_params=True)
+                st.rerun()
+            # Only update dialogue when it actually changed to reduce blink/focus reset from redundant redraws
+            loaded = load_messages(conv_id)
+            new_dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
+            current = st.session_state.get("dialogue") or []
+            if not _dialogue_equals(current, new_dialogue):
+                st.session_state.dialogue = new_dialogue
+                st.session_state.loaded_conversation_id = conv_id
+            # Always sync intro flags from loaded history so agents don't re-introduce (e.g. after another user's message)
+            _sync_agent_intro_state_from_dialogue(new_dialogue)
+        SPEAKER_LABELS = {
+            ROLE_INSTRUCTOR: "Instructor",
+            ROLE_MODERATOR: _get_moderator_display_name(),
+            "agent1": AGENT_1_NAME,
+            "agent2": AGENT_2_NAME,
+        }
+        if st.session_state.dialogue:
+            order_col, export_col = st.columns([3, 1])
+            with order_col:
+                if st.button("Reverse order", key="conv_history_reverse_order_btn"):
+                    st.session_state.dialogue_newest_first = not st.session_state.dialogue_newest_first
+                    st.rerun()
+            with export_col:
+                docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
+                st.download_button(
+                    "Export to doc",
+                    data=docx_bytes,
+                    file_name="conversation.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="export_dialogue_btn",
+                )
+        st.subheader("Conversation history")
+        if not st.session_state.dialogue:
+            st.caption("No messages yet. Send an instructor or moderator message, or generate an agent response.")
+        messages = reversed(st.session_state.dialogue) if st.session_state.dialogue_newest_first else st.session_state.dialogue
+        # When an agent is streaming, show the reply as a chat message inside this list (same panel as previous messages)
+        _streaming = st.session_state.get("agent1_thinking") or st.session_state.get("agent2_thinking")
+        if _streaming and st.session_state.dialogue_newest_first:
+            _which = "agent1" if st.session_state.get("agent1_thinking") else "agent2"
+            _stream_label = AGENT_1_NAME if _which == "agent1" else AGENT_2_NAME
+            with st.chat_message("assistant"):
+                st.markdown(f"**{_stream_label}:**")
+                _stream_ph = st.empty()
+                st.session_state._stream_placeholder = _stream_ph
+        for entry in messages:
+            party, content = entry[0], entry[1]
+            ts = entry[2] if len(entry) >= 3 else None
+            label = entry[3] if len(entry) >= 4 and entry[3] else SPEAKER_LABELS.get(party, party)
+            if party in ("agent1", "agent2"):
+                content = _strip_agent_name_prefix(content, label)
+            is_human = party in (ROLE_INSTRUCTOR, ROLE_MODERATOR)
+            with st.chat_message("user" if is_human else "assistant"):
+                st.markdown(f"**{label}:**")
+                st.markdown(content)
+                if ts:
+                    st.caption(_format_in_pst(ts, "%Y-%m-%d %H:%M"))
+        if _streaming and not st.session_state.dialogue_newest_first:
+            _which = "agent1" if st.session_state.get("agent1_thinking") else "agent2"
+            _stream_label = AGENT_1_NAME if _which == "agent1" else AGENT_2_NAME
+            with st.chat_message("assistant"):
+                st.markdown(f"**{_stream_label}:**")
+                _stream_ph = st.empty()
+                st.session_state._stream_placeholder = _stream_ph
+
     left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history
+
+    # Render right column first so streaming placeholder exists in conversation history when agent runs.
+    with right_col:
+        conversation_history_fragment()
 
     with left_col:
         # Human message: choose role, type and press Enter (no Send button)
@@ -749,11 +854,12 @@ def main():
         row2_col1, row2_col2 = st.columns([4, 1])
         _render_agent_role_row("agent2", AGENT_2_NAME, AGENT_2_ROLE, row2_col1, row2_col2)
 
-        # Thinking spinner: full-width row so UI stays visible; CSS above forces spinner left-aligned
+        # Thinking spinner: agent reply streams into conversation history placeholder (created in fragment)
         _thinking_col, = st.columns([1])
         with _thinking_col:
-            _run_agent_thinking_if_set("agent1", AGENT_1_NAME)
-            _run_agent_thinking_if_set("agent2", AGENT_2_NAME)
+            _stream_placeholder = st.session_state.get("_stream_placeholder")
+            _run_agent_thinking_if_set("agent1", AGENT_1_NAME, stream_placeholder=_stream_placeholder)
+            _run_agent_thinking_if_set("agent2", AGENT_2_NAME, stream_placeholder=_stream_placeholder)
 
         # @mention: use same thinking path as Respond so spinner always appears in the same place
         if human_prompt:
@@ -775,63 +881,6 @@ def main():
                         st.session_state.pending_mention_agents = mentioned.copy()
                         st.session_state[f"{mentioned[0]}_thinking"] = True
                 st.rerun()
-
-    @st.fragment(run_every=timedelta(seconds=2))
-    def conversation_history_fragment():
-        conv_id = st.session_state.get("conversation_id") or ""
-        if conv_id and get_supabase():
-            if not conversation_exists(conv_id):
-                _clear_conversation_state(clear_query_params=True)
-                st.rerun()
-            # Only update dialogue when it actually changed to reduce blink/focus reset from redundant redraws
-            loaded = load_messages(conv_id)
-            new_dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
-            current = st.session_state.get("dialogue") or []
-            if not _dialogue_equals(current, new_dialogue):
-                st.session_state.dialogue = new_dialogue
-                st.session_state.loaded_conversation_id = conv_id
-            # Always sync intro flags from loaded history so agents don't re-introduce (e.g. after another user's message)
-            _sync_agent_intro_state_from_dialogue(new_dialogue)
-        SPEAKER_LABELS = {
-            ROLE_INSTRUCTOR: "Instructor",
-            ROLE_MODERATOR: _get_moderator_display_name(),
-            "agent1": AGENT_1_NAME,
-            "agent2": AGENT_2_NAME,
-        }
-        if st.session_state.dialogue:
-            order_col, export_col = st.columns([3, 1])
-            with order_col:
-                if st.button("Reverse order", key="conv_history_reverse_order_btn"):
-                    st.session_state.dialogue_newest_first = not st.session_state.dialogue_newest_first
-                    st.rerun()
-            with export_col:
-                docx_bytes = export_dialogue_to_docx(st.session_state.dialogue, SPEAKER_LABELS)
-                st.download_button(
-                    "Export to doc",
-                    data=docx_bytes,
-                    file_name="conversation.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key="export_dialogue_btn",
-                )
-        st.subheader("Conversation history")
-        if not st.session_state.dialogue:
-            st.caption("No messages yet. Send an instructor or moderator message, or generate an agent response.")
-        messages = reversed(st.session_state.dialogue) if st.session_state.dialogue_newest_first else st.session_state.dialogue
-        for entry in messages:
-            party, content = entry[0], entry[1]
-            ts = entry[2] if len(entry) >= 3 else None
-            label = entry[3] if len(entry) >= 4 and entry[3] else SPEAKER_LABELS.get(party, party)
-            if party in ("agent1", "agent2"):
-                content = _strip_agent_name_prefix(content, label)
-            is_human = party in (ROLE_INSTRUCTOR, ROLE_MODERATOR)
-            with st.chat_message("user" if is_human else "assistant"):
-                st.markdown(f"**{label}:**")
-                st.markdown(content)
-                if ts:
-                    st.caption(_format_in_pst(ts, "%Y-%m-%d %H:%M"))
-
-    with right_col:
-        conversation_history_fragment()
 
 
 # All UI timestamps shown in PST; store in Supabase as UTC so all users have consistent timestamps

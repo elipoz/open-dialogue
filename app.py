@@ -673,7 +673,7 @@ def main():
                 lines.append(f"  {resp_preview}")
                 log_text = "\n".join(lines)
             else:
-                log_text = "No requests yet."
+                log_text = "No requests yet. Use Respond or @mention an agent to see request/response here."
             st.text_area("Log", value=log_text, height=300, label_visibility="collapsed", disabled=True)
 
     left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history

@@ -9,6 +9,7 @@ Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Mode
 **Recent:** Agent reply streams only inside the **Conversation history** panel (as a chat message in the same list as previous messages). Streaming uses plain text in the placeholder to avoid brief font/size jumps from partial markdown; the final message in history still renders with full markdown. **Agent-to-agent:** Agents can trigger each other by @mention or by naming the other (e.g. "Joshi, what do you think?"); with probability P (0–0.5, editable in sidebar) the other agent may also be triggered after a reply; cap N (0–10) limits consecutive agent messages. Sidebar has editable **Agent chain cap (N)** and **Agent reply probability (P)** above Participants; P=0 disables random chain (only @mention/name triggers); N=0 or N=1 means no chain. When the human says e.g. "@j can ask Gosha to respond?", Gosha is triggered after Joshi replies (trigger_after_mention_chain).
 
 **Live app:** https://open-dialogue-with-ai.streamlit.app/
+**Supabase:** https://supabase.com/dashboard/project/ijpdpteksbsmchdnerdm/editor/17532?schema=public
 
 ## Features
 

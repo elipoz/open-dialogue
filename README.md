@@ -3,6 +3,7 @@
 A Streamlit app for N-way dialogue between a human moderator, an instructor, and two AI agents. Each agent uses a separate OpenAI session. Agents can use Tavily for web search when configured.
 
 **Live app:** https://open-dialogue-with-ai.streamlit.app/
+**Supabase:** https://supabase.com/dashboard/project/ijpdpteksbsmchdnerdm/editor/17532?schema=public
 
 ## Setup
 

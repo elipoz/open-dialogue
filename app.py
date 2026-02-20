@@ -12,41 +12,12 @@ import re
 import time
 import uuid as uuid_lib
 from datetime import datetime, timedelta
+import streamlit as st
 from typing import Optional
 from zoneinfo import ZoneInfo
-
-import streamlit as st
-
-# All UI timestamps shown in PST
-_PST = ZoneInfo("America/Los_Angeles")
-
-
-def _format_in_pst(dt, fmt: str = "%Y-%m-%d %H:%M") -> str:
-    """Format a datetime in PST. Naive datetimes are assumed UTC. Strings (ISO) parsed as UTC."""
-    if dt is None:
-        return ""
-    try:
-        if isinstance(dt, str):
-            s = (dt or "").strip().replace("Z", "+00:00")
-            try:
-                dt = datetime.fromisoformat(s[:26])  # trim excess fractional seconds
-            except ValueError:
-                return (dt or "")[:19].replace("T", " ")
-        if hasattr(dt, "tzinfo") and dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-        return dt.astimezone(_PST).strftime(fmt)
-    except Exception:
-        return (str(dt) if dt else "")[:19].replace("T", " ")
-
-
-def _now_pst() -> datetime:
-    """Current time in PST (for new conversation label)."""
-    return datetime.now(_PST)
-
 from doc_export import export_dialogue_to_docx
 from dotenv import load_dotenv
 from openai import OpenAI
-
 from supabase_client import (
     conversation_exists,
     create_conversation,
@@ -118,6 +89,31 @@ AGENT_2_ROLE = """You are a an AI agent participating in a research on multicult
 AGENT_2_ROLE_AND_NAME = f"You are {AGENT_2_NAME}. {AGENT_2_ROLE}"
 
 
+def _get_agent_role(agent_key: str, moderator_name: str) -> str:
+    """Return full system prompt for agent: fixed identity and role; never speak as others."""
+    if agent_key == "agent1":
+        name, other = AGENT_1_NAME, AGENT_2_NAME
+        role_text = st.session_state.get("agent1_role", AGENT_1_ROLE)
+    else:
+        name, other = AGENT_2_NAME, AGENT_1_NAME
+        role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
+    return (
+        f"You are {name}. {role_text}\n\n"
+        f"IDENTITY (strict): You must respond ONLY as {name}. Write only your own words in first person as {name}. "
+        f"Never speak as, or on behalf of, the Instructor, the moderator ({moderator_name}), or {other}. "
+        f"Do not attribute lines to others or say what they would say.\n\n"
+        f"SPEAK ONLY FOR YOURSELF: You may refer to questions and reflect on answers from other participants in the conversation, "
+        f"but you must reply only on your own behalf — based on what you, as {name}, think is the best answer. "
+        f"You can ask questions to the other participants in the conversation - the Moderator or the {other}, and you can reflect on what they said. "
+        f"You are part of an ongoing conversation between multiple participants - you, another AI agent and one, two or more human Moderators. "
+        f"When answering questions from or reflecting on ideas, thoughts, or messages of other participants in the conversation - "
+        f"you must not get confused as to who said what and be able to reference the right person/participant in the conversation. "
+        f"Apply critical thinking to decide what previous messages in the conversation history to respond to and reflect upon, pickiung the most relevant ones. "
+        f"Reply with your message content only: do not start your reply with 'At <date> <time> <name> said:' or repeat that prefix; "
+        f"do not echo your own name or the time as a label at the start of your reply."
+    )
+
+
 def init_session_state():
     if "dialogue" not in st.session_state:
         st.session_state.dialogue = []  # list of (party, content, timestamp)
@@ -174,33 +170,8 @@ def init_session_state():
 
 
 def _get_moderator_display_name() -> str:
-    """Display name for moderator in conversation history (user-provided name, or fallback)."""
-    name = (st.session_state.get("moderator_name") or "").strip()
-    return name if name else "Moderator"
-
-
-def _get_agent_role(agent_key: str) -> str:
-    """Return full system prompt for agent: fixed identity and role; never speak as others."""
-    if agent_key == "agent1":
-        name, other = AGENT_1_NAME, AGENT_2_NAME
-        role_text = st.session_state.get("agent1_role", AGENT_1_ROLE)
-    else:
-        name, other = AGENT_2_NAME, AGENT_1_NAME
-        role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
-    return (
-        f"You are {name}. {role_text}\n\n"
-        f"IDENTITY (strict): You must respond ONLY as {name}. Write only your own words in first person as {name}. "
-        f"Never speak as, or on behalf of, the Instructor, the moderator ({_get_moderator_display_name()}), or {other}. "
-        f"Do not attribute lines to others or say what they would say.\n\n"
-        f"SPEAK ONLY FOR YOURSELF: You may refer to questions and reflect on answers from other participants in the conversation, "
-        f"but you must reply only on your own behalf — based on what you, as {name}, think is the best answer. "
-        f"You can ask questions to the other participants in the conversation - the Moderator or the {other}, and you can reflect on what they said. "
-        f"You are part of an ongoing conversation between multiple participants - you, another AI agent and one, two or more human Moderators. "
-        f"When answering questions from or reflecting on ideas, thoughts, or messages of other participants in the conversation - "
-        f"you must not get confused as to who said what and be able to reference the right person/participant in the conversation. "
-        f"Reply with your message content only: do not start your reply with 'At <date> <time> <name> said:' or repeat that prefix; "
-        f"do not echo your own name or the time as a label at the start of your reply."
-    )
+    """Display name for moderator (user-provided name; must be set before app content is shown)."""
+    return (st.session_state.get("moderator_name") or "").strip()
 
 
 def _get_agent_role_text_only(agent_key: str) -> str:
@@ -421,11 +392,6 @@ def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str
         ts = entry[2]  # created_at from database, always present
         author_from_db = entry[3] if len(entry) >= 4 and entry[3] else None
         label = author_from_db if author_from_db else _speaker_label(party)  # _speaker_label: moderator→moderator_name, agent1/2→AGENT_1_NAME/AGENT_2_NAME, instructor→Instructor
-        # Use current session moderator name when we would otherwise show the generic "Moderator"
-        if party == "moderator" and label == "Moderator":
-            current_name = (st.session_state.get("moderator_name") or "").strip()
-            if current_name:
-                label = current_name
         formatted_ts = _format_in_pst(ts, "%Y-%m-%d %H:%M")
         attributed = f"At {formatted_ts} {label} said: {content}"
         if party == speaker:
@@ -505,7 +471,7 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str) -> None:
     if not st.session_state.get(f"{agent_key}_thinking", False):
         return
     with st.spinner(f"{agent_name} thinking…"):
-        reply = call_openai_for_agent(_get_agent_role(agent_key), agent_key)
+        reply = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name()), agent_key)
     reply = _strip_agent_name_prefix(reply, agent_name)
     _ts = datetime.now()
     st.session_state.dialogue.append((agent_key, reply, _ts))
@@ -789,6 +755,33 @@ def main():
 
     with right_col:
         conversation_history_fragment()
+
+
+# All UI timestamps shown in PST
+_PST = ZoneInfo("America/Los_Angeles")
+
+
+def _format_in_pst(dt, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Format a datetime in PST. Naive datetimes are assumed UTC. Strings (ISO) parsed as UTC."""
+    if dt is None:
+        return ""
+    try:
+        if isinstance(dt, str):
+            s = (dt or "").strip().replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(s[:26])  # trim excess fractional seconds
+            except ValueError:
+                return (dt or "")[:19].replace("T", " ")
+        if hasattr(dt, "tzinfo") and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(_PST).strftime(fmt)
+    except Exception:
+        return (str(dt) if dt else "")[:19].replace("T", " ")
+
+
+def _now_pst() -> datetime:
+    """Current time in PST (for new conversation label)."""
+    return datetime.now(_PST)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ Agents can use Tavily to search the web when they need up-to-date information.
 
 import json
 import os
+import random
 import re
 import time
 import uuid as uuid_lib
@@ -92,6 +93,10 @@ AGENT_2_ROLE_AND_NAME = f"You are {AGENT_2_NAME}. {AGENT_2_ROLE}"
 ROLE_INSTRUCTOR = "instructor"
 ROLE_MODERATOR = "moderator"
 
+# Agent-to-agent: cap and probability (stops endless loops)
+AGENT_CROSS_MENTION_N = 10   # max consecutive agent messages before requiring human/Respond
+AGENT_CROSS_MENTION_P = 0.35 # probability of triggering the other agent after a reply when not @mentioned (0 = only @mention triggers)
+
 
 def _get_agent_role(agent_key: str, moderator_name: str) -> str:
     """Return full system prompt for agent: fixed identity and role; never speak as others."""
@@ -148,6 +153,10 @@ def init_session_state():
         st.session_state.agent2_thinking = False
     if "pending_mention_agents" not in st.session_state:
         st.session_state.pending_mention_agents = []  # queue of agent_key when replying via @mention (same spinner location as Respond)
+    if "agent_chain_count" not in st.session_state:
+        st.session_state.agent_chain_count = 0  # consecutive agent messages since last human message or Respond; cap at AGENT_CROSS_MENTION_N
+    if "trigger_after_mention_chain" not in st.session_state:
+        st.session_state.trigger_after_mention_chain = []  # when human says e.g. "@j ask Gosha to respond", trigger these agents after the @mention chain
     if "moderator_name" not in st.session_state:
         st.session_state.moderator_name = ""  # set before conversation; used as label in history instead of "Moderator"
     # Supabase: conversation_id from URL; when it changes, clear dialogue so we load from DB
@@ -229,6 +238,7 @@ def _clear_conversation_state(
     st.session_state.conversation_id = ""
     st.session_state.loaded_conversation_id = None
     st.session_state.dialogue = []
+    st.session_state.agent_chain_count = 0
     if invalidate_list_cache:
         st.session_state.conversation_list_cache = None
         st.session_state.conversation_list_cache_ts = 0.0
@@ -270,6 +280,15 @@ def _mentioned_agents(text: str) -> list[str]:
         if re.search(_mention_pattern_for_name(AGENT_2_NAME), lower):
             mentioned.append("agent2")
     return mentioned
+
+
+def _agent_name_as_word_in_text(text: str, name: str) -> bool:
+    """True if the agent's full name appears as a word (e.g. 'Joshi' or ', Joshi?'). Used for agent-to-agent so addressing by name triggers a reply even without @."""
+    if not text or not name:
+        return False
+    # Word boundary so "Joshi" matches but "Josh" doesn't; case-insensitive
+    pattern = r"\b" + re.escape(name) + r"\b"
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
 
 def _expand_mentions_to_names(text: str) -> str:
@@ -353,6 +372,7 @@ def _render_agent_respond_button(agent_key: str, btn_col) -> None:
     with btn_col:
         if st.button("Respond", key=f"gen_{agent_key}"):
             st.session_state[thinking_key] = True
+            st.session_state.agent_chain_count = 0  # user-initiated reply starts a fresh agent chain
             st.rerun()
 
 
@@ -372,6 +392,7 @@ def _render_agent_role_row(agent_key: str, agent_name: str, agent_role: str, rol
                     new_role = st.session_state.get(f"{agent_key}_role_input", st.session_state.get(f"{agent_key}_role", agent_role))
                     st.session_state[f"{agent_key}_role"] = new_role
                     st.session_state[f"{agent_key}_needs_intro"] = True
+                    st.session_state.agent_chain_count = 0  # human action resets agent chain
                     _ts = datetime.now(_UTC)
                     msg = f"Updated {agent_name}'s role:\n\n{new_role}"
                     st.session_state.dialogue.append((ROLE_INSTRUCTOR, msg, _ts))
@@ -532,7 +553,7 @@ def call_openai_for_agent(role_prompt: str, speaker: str, stream_placeholder=Non
 
 
 def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placeholder=None) -> None:
-    """If this agent's thinking flag is set, call OpenAI, log request/response, persist reply, clear flag, advance pending mentions if any, then rerun."""
+    """If this agent's thinking flag is set, call OpenAI, log request/response, persist reply, clear flag, advance pending mentions if any, then maybe trigger other agent (@mention or probability), then rerun."""
     if not st.session_state.get(f"{agent_key}_thinking", False):
         return
     with st.spinner(f"{agent_name} thinking…"):
@@ -545,6 +566,8 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
     _reload_dialogue_from_db()
     st.session_state[f"{agent_key}_thinking"] = False
     st.session_state[f"{agent_key}_needs_intro"] = False
+    # Consecutive agent message count (cap to prevent endless agent-to-agent loops)
+    st.session_state.agent_chain_count = st.session_state.get("agent_chain_count", 0) + 1
     _pending = st.session_state.get("pending_mention_agents", [])
     if _pending and _pending[0] == agent_key:
         st.session_state.pending_mention_agents = _pending[1:]
@@ -553,7 +576,22 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
             st.session_state[f"{_next}_thinking"] = True
         else:
             st.session_state.pending_mention_agents = []
+            # Human asked to have another agent respond after this chain (e.g. "@j can ask Gosha to respond?")
+            _after = st.session_state.get("trigger_after_mention_chain", [])
+            if _after and st.session_state.get("agent_chain_count", 0) < st.session_state.get("agent_cross_mention_n", AGENT_CROSS_MENTION_N):
+                st.session_state[f"{_after[0]}_thinking"] = True
+            st.session_state.trigger_after_mention_chain = []
         st.rerun()
+    # Agent-to-agent: trigger other agent if @mentioned or named (or with probability), and under cap
+    _other = "agent2" if agent_key == "agent1" else "agent1"
+    _other_name = AGENT_2_NAME if agent_key == "agent1" else AGENT_1_NAME
+    _cap_n = st.session_state.get("agent_cross_mention_n", AGENT_CROSS_MENTION_N)
+    _under_cap = st.session_state.get("agent_chain_count", 0) < _cap_n
+    _other_mentioned = _other in _mentioned_agents(reply) or _agent_name_as_word_in_text(reply, _other_name)
+    _p = max(0.0, min(0.5, float(st.session_state.get("agent_cross_mention_p", AGENT_CROSS_MENTION_P))))
+    _prob_trigger = _p > 0 and random.random() < _p
+    if _under_cap and (_other_mentioned or _prob_trigger):
+        st.session_state[f"{_other}_thinking"] = True
     st.rerun()
 
 
@@ -700,6 +738,27 @@ def main():
 
         sidebar_conv_list()
 
+        st.divider()
+        # Agent cross-mention: N (cap) and P (probability) — used for subsequent agent-to-agent replies
+        st.number_input(
+            "Agent chain cap (N)",
+            min_value=0,
+            max_value=10,
+            value=AGENT_CROSS_MENTION_N,
+            step=1,
+            help="Max consecutive agent messages before requiring human/Respond. N=0 or N=1: no chain (at most one agent reply).",
+            key="agent_cross_mention_n",
+        )
+        st.number_input(
+            "Agent reply probability (P)",
+            min_value=0.0,
+            max_value=0.5,
+            value=float(AGENT_CROSS_MENTION_P),
+            step=0.05,
+            format="%.2f",
+            help="Probability (0–0.5) of triggering the other agent after a reply when not @mentioned. P=0: only @mention or naming the other agent triggers; no random chain.",
+            key="agent_cross_mention_p",
+        )
         st.divider()
         # Participants: human users who posted in this conversation
         _dialogue = st.session_state.get("dialogue") or []
@@ -875,11 +934,18 @@ def main():
                 st.session_state.agent1_thinking = False
                 st.session_state.agent2_thinking = False
                 st.session_state.pending_mention_agents = []
+                st.session_state.trigger_after_mention_chain = []
+                st.session_state.agent_chain_count = 0  # new human message starts a fresh agent chain
                 if role == ROLE_MODERATOR:
                     mentioned = _mentioned_agents(text)
                     if mentioned:
                         st.session_state.pending_mention_agents = mentioned.copy()
                         st.session_state[f"{mentioned[0]}_thinking"] = True
+                    # If human also named the other agent (e.g. "@j can ask Gosha to respond?"), trigger that agent after the @mention chain
+                    st.session_state.trigger_after_mention_chain = []
+                    for key, name in [("agent1", AGENT_1_NAME), ("agent2", AGENT_2_NAME)]:
+                        if key not in (mentioned or []) and name and _agent_name_as_word_in_text(text, name):
+                            st.session_state.trigger_after_mention_chain.append(key)
                 st.rerun()
 
 

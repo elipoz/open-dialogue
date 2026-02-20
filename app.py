@@ -88,6 +88,10 @@ AGENT_2_NAME = "Joshi"
 AGENT_2_ROLE = """You are a an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity."""
 AGENT_2_ROLE_AND_NAME = f"You are {AGENT_2_NAME}. {AGENT_2_ROLE}"
 
+# Party keys for dialogue entries and role checks (human roles)
+ROLE_INSTRUCTOR = "instructor"
+ROLE_MODERATOR = "moderator"
+
 
 def _get_agent_role(agent_key: str, moderator_name: str) -> str:
     """Return full system prompt for agent: fixed identity and role; never speak as others."""
@@ -191,7 +195,7 @@ def _get_agent_role_text_only(agent_key: str) -> str:
 
 def _speaker_label(party: str) -> str:
     """Return display label for a party in the dialogue (moderator uses session moderator_name)."""
-    labels = {"instructor": "Instructor", "moderator": _get_moderator_display_name(), "agent1": AGENT_1_NAME, "agent2": AGENT_2_NAME}
+    labels = {ROLE_INSTRUCTOR: "Instructor", ROLE_MODERATOR: _get_moderator_display_name(), "agent1": AGENT_1_NAME, "agent2": AGENT_2_NAME}
     return labels.get(party, party)
 
 
@@ -228,12 +232,12 @@ def _clear_conversation_state(
 def _author_display_name_to_party(author_display_name: str) -> str:
     """Map author display name from DB back to party key (instructor, moderator, agent1, agent2)."""
     if author_display_name == "Instructor":
-        return "instructor"
+        return ROLE_INSTRUCTOR
     if author_display_name == AGENT_1_NAME:
         return "agent1"
     if author_display_name == AGENT_2_NAME:
         return "agent2"
-    return "moderator"  # any other human name
+    return ROLE_MODERATOR  # any other human name
 
 
 def _mention_pattern_for_name(name: str) -> str:
@@ -363,8 +367,8 @@ def _render_agent_role_row(agent_key: str, agent_name: str, agent_role: str, rol
                     st.session_state[f"{agent_key}_needs_intro"] = True
                     _ts = datetime.now(_UTC)
                     msg = f"Updated {agent_name}'s role:\n\n{new_role}"
-                    st.session_state.dialogue.append(("instructor", msg, _ts))
-                    persist_message(st.session_state.get("conversation_id") or "", _speaker_label("instructor"), msg, _ts)
+                    st.session_state.dialogue.append((ROLE_INSTRUCTOR, msg, _ts))
+                    persist_message(st.session_state.get("conversation_id") or "", _speaker_label(ROLE_INSTRUCTOR), msg, _ts)
                     _reload_dialogue_from_db()
                     st.rerun()
     with button_col:
@@ -653,7 +657,7 @@ def main():
         st.divider()
         # Participants: human users who posted in this conversation
         _dialogue = st.session_state.get("dialogue") or []
-        _human_authors = sorted({e[3] for e in _dialogue if e[0] in ("moderator", "instructor") and len(e) >= 4 and e[3]})
+        _human_authors = sorted({e[3] for e in _dialogue if e[0] == ROLE_MODERATOR and len(e) >= 4 and e[3]})
         with st.expander("Participants", expanded=False):
             if _human_authors:
                 for _name in _human_authors:
@@ -698,11 +702,10 @@ def main():
             key="send_as_radio",
             label_visibility="collapsed",
         )
-        # When user changes Moderator/Instructor, focus the chat input on next run
+        # When user changes Moderator/Instructor, keep prev for any future use
         _current_radio = st.session_state.get("send_as_radio", "Moderator")
         _prev_radio = st.session_state.get("send_as_radio_prev", _current_radio)
         if _current_radio != _prev_radio:
-            st.session_state.focus_chat_input = True
             st.session_state.send_as_radio_prev = _current_radio
         # Same width for chat input and agent rows; each Respond button on the same row as its agent (column [4,1] so button fits "Respond" on one line)
         row0_col1, row0_col2 = st.columns([4, 1])
@@ -739,7 +742,7 @@ def main():
 
         # @mention: use same thinking path as Respond so spinner always appears in the same place
         if human_prompt:
-            role = "moderator" if st.session_state.get("send_as_radio") == "Moderator" else "instructor"
+            role = ROLE_MODERATOR if st.session_state.get("send_as_radio") == "Moderator" else ROLE_INSTRUCTOR
             text = human_prompt.strip()
             if text:
                 text_for_history = _expand_mentions_to_names(text)  # @g / @ j -> real names in history and for OpenAI
@@ -747,8 +750,11 @@ def main():
                 st.session_state.dialogue.append((role, text_for_history, _ts))
                 persist_message(st.session_state.get("conversation_id") or "", _speaker_label(role), text_for_history, _ts)
                 _reload_dialogue_from_db()
-                # Agents respond to @-mentions only when the message is from the Moderator, not the Instructor
-                if role == "moderator":
+                # Clear agent thinking on every new message; then set from @mention when Moderator posts
+                st.session_state.agent1_thinking = False
+                st.session_state.agent2_thinking = False
+                st.session_state.pending_mention_agents = []
+                if role == ROLE_MODERATOR:
                     mentioned = _mentioned_agents(text)
                     if mentioned:
                         st.session_state.pending_mention_agents = mentioned.copy()
@@ -772,8 +778,8 @@ def main():
             # Always sync intro flags from loaded history so agents don't re-introduce (e.g. after another user's message)
             _sync_agent_intro_state_from_dialogue(new_dialogue)
         SPEAKER_LABELS = {
-            "instructor": "Instructor",
-            "moderator": _get_moderator_display_name(),
+            ROLE_INSTRUCTOR: "Instructor",
+            ROLE_MODERATOR: _get_moderator_display_name(),
             "agent1": AGENT_1_NAME,
             "agent2": AGENT_2_NAME,
         }
@@ -802,7 +808,7 @@ def main():
             label = entry[3] if len(entry) >= 4 and entry[3] else SPEAKER_LABELS.get(party, party)
             if party in ("agent1", "agent2"):
                 content = _strip_agent_name_prefix(content, label)
-            is_human = party in ("instructor", "moderator")
+            is_human = party in (ROLE_INSTRUCTOR, ROLE_MODERATOR)
             with st.chat_message("user" if is_human else "assistant"):
                 st.markdown(f"**{label}:**")
                 st.markdown(content)

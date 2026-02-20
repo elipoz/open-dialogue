@@ -94,7 +94,7 @@ ROLE_INSTRUCTOR = "instructor"
 ROLE_MODERATOR = "moderator"
 
 # Agent-to-agent: cap and probability (stops endless loops)
-AGENT_CROSS_MENTION_N = 10   # max consecutive agent messages before requiring human/Respond
+AGENT_CROSS_MENTION_N = 0    # max consecutive agent messages before requiring human/Respond
 AGENT_CROSS_MENTION_P = 0.35 # probability of triggering the other agent after a reply when not @mentioned (0 = only @mention triggers)
 
 
@@ -768,7 +768,7 @@ def main():
                 for _name in _human_authors:
                     st.markdown(f"- **{_name}**")
             else:
-                st.caption("No human messages yet.")
+                st.caption("No human participants yet.")
 
         # Request / response log at bottom of sidebar so it doesn't overlap the thinking spinner in the main panel
         entry = st.session_state.get("openai_request_log")

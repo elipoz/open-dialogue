@@ -26,7 +26,7 @@ Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Mode
 - **Refactoring:** Agent thinking flow in `_run_agent_thinking_if_set(agent_key, agent_name)`; agent role row (expander + form + Respond button) in `_render_agent_role_row(agent_key, agent_name, agent_role, role_col, button_col)`.
 - **Password (Streamlit Cloud):** When `APP_PASSWORD` is set and running on Streamlit Cloud, the login screen includes name + password + Submit (password omitted when running locally).
 - **Tavily:** Optional `TAVILY_API_KEY` in `.env` for agent web search. Status line under title shows enabled / disabled / error (only after moderator name is set; not on the name-entry page).
-- **Model:** OpenAI model **gpt-4o-mini**; temperature 0.7 for more variation. Agent prompt instructs taking a different perspective from the other agent when relevant.
+- **Model:** OpenAI model **gpt-5-mini** (no temperature param; model uses default). Agent prompt instructs taking a different perspective from the other agent when relevant.
 - **Request / response log:** In sidebar at bottom (below conversation list); shows latest request sent to OpenAI and response received (after each Respond or @mention). Single entry only; expander opens when content exists so it doesn’t overlap the thinking spinner. Log written in `_run_agent_thinking_if_set` after `call_openai_for_agent` returns.
 - **Timestamps in DB:** Messages stored with UTC `created_at` so all users have consistent timestamps regardless of app host.
 

@@ -456,7 +456,7 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> tuple[str, list]:
     tools = [SEARCH_TOOL] if _get_tavily_client() else None
     max_tool_rounds = 5
     for _ in range(max_tool_rounds):
-        kwargs = {"model": "gpt-4o-mini", "messages": messages, "temperature": 0.7}
+        kwargs = {"model": "gpt-5-mini", "messages": messages}
         if tools:
             kwargs["tools"] = tools
         response = client.chat.completions.create(**kwargs)
@@ -483,7 +483,7 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> tuple[str, list]:
                 result = f"Unknown tool: {name}"
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
     # After tool rounds, get a final text response (no more tools)
-    final = client.chat.completions.create(model="gpt-4o-mini", messages=messages, temperature=0.7)
+    final = client.chat.completions.create(model="gpt-5-mini", messages=messages)
     reply = (final.choices[0].message.content or "").strip()
     return (reply, messages)
 

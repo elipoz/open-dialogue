@@ -28,13 +28,14 @@ def get_supabase():
 
 
 def create_conversation() -> str:
-    """Insert a new row in od_conversations and return its id (UUID string)."""
+    """Insert a new row in od_conversations and return its id (UUID string). Fetches current time so created_at is accurate."""
     sb = get_supabase()
     if not sb:
         return ""
     conv_id = str(uuid_lib.uuid4())
+    now_utc = datetime.now(_UTC).isoformat()
     try:
-        sb.table("od_conversations").insert({"id": conv_id}).execute()
+        sb.table("od_conversations").insert({"id": conv_id, "created_at": now_utc}).execute()
         return conv_id
     except Exception:
         return ""

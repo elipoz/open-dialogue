@@ -173,6 +173,13 @@ def init_session_state():
                 st.session_state.loaded_conversation_id = None
         elif "loaded_conversation_id" not in st.session_state:
             st.session_state.loaded_conversation_id = None
+    # When URL has no valid conversation_id and nothing is selected, select the most recent conversation (URL always wins when present)
+    if not _valid_uuid and not (st.session_state.get("conversation_id") or "").strip() and get_supabase():
+        recent = list_conversations(1)
+        if recent and recent[0].get("id"):
+            cid = recent[0]["id"]
+            st.session_state.conversation_id = cid
+            st.query_params["conversation_id"] = cid
     if "conversation_list_cache_ts" not in st.session_state:
         st.session_state.conversation_list_cache_ts = 0.0
     if "conversation_list_cache" not in st.session_state:
@@ -434,6 +441,14 @@ def _run_tavily_search(query: str) -> str:
         return f"Search failed: {e}"
 
 
+def _truncate_middle(text: str, max_len: int) -> str:
+    """If text is longer than max_len, return prefix + '...' + suffix with prefix and suffix equal length."""
+    if not text or len(text) <= max_len:
+        return text
+    half = (max_len - 3) // 2  # leave room for "..."
+    return text[:half] + "..." + text[-half:]
+
+
 def _log_openai_request(speaker: str, messages: list, response_text: str) -> None:
     """Store the latest request/response only (overwrites previous). Use ISO ts for session state."""
     sanitized = [{"role": m.get("role"), "content": (m.get("content") or "")[:8000]} for m in messages]
@@ -680,13 +695,13 @@ def main():
                     for m in entry.get("messages", []):
                         role = m.get("role", "")
                         content = (m.get("content") or "").strip()
-                        content_preview = content[:2000] + "..." if len(content) > 2000 else content
+                        content_preview = _truncate_middle(content, 2000)
                         req_lines.append(f"[{role}]\n{content_preview}")
                     req_text = "\n\n".join(req_lines)
                     st.text_area("Request", value=req_text, height=200, label_visibility="collapsed", disabled=True, key=f"log_request_{log_key_suffix}")
                 with st.expander("Response", expanded=False):
                     resp = entry.get("response", "")
-                    resp_preview = resp[:2000] + "..." if len(resp) > 2000 else resp
+                    resp_preview = _truncate_middle(resp, 2000)
                     st.text_area("Response", value=resp_preview, height=200, label_visibility="collapsed", disabled=True, key=f"log_response_{log_key_suffix}")
             else:
                 st.caption("No requests yet. Use Respond or @mention an agent to see request/response here.")

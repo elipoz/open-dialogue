@@ -394,24 +394,18 @@ def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str
         )
         tools_instruction += intro
     messages = [{"role": "system", "content": role_prompt + tools_instruction}]
-    # dialogue is always stored chronologically; send to API with "At <timestamp> <role> said: <message>" so who said what and when is clear (timestamp = message created_at from DB). Use actual names: moderator = user's name, agents = their display names (Gosha, Joshi, etc.).
+    # One [user] message: full transcript with "At <timestamp> <name> said: <content>" so who said what is clear.
+    transcript_lines = []
     for entry in st.session_state.dialogue:
         party, content = entry[0], entry[1]
-        ts = entry[2]  # created_at from database, always present
+        ts = entry[2]
         author_from_db = entry[3] if len(entry) >= 4 and entry[3] else None
-        label = author_from_db if author_from_db else _speaker_label(party)  # _speaker_label: moderator→moderator_name, agent1/2→AGENT_1_NAME/AGENT_2_NAME, instructor→Instructor
+        label = author_from_db if author_from_db else _speaker_label(party)
         formatted_ts = _format_in_pst(ts, "%Y-%m-%d %H:%M")
-        attributed = f"At {formatted_ts} {label} said: {content}"
-        if party == speaker:
-            messages.append({"role": "assistant", "content": attributed})
-        else:
-            messages.append({"role": "user", "content": attributed})
-    # Anchor this turn: remind the model to reply only as this agent (fixed identity)
+        transcript_lines.append(f"At {formatted_ts} {label} said: {content}")
     my_name = _speaker_label(speaker)
-    messages.append({
-        "role": "user",
-        "content": f"[Reply now only as {my_name}.]",
-    })
+    transcript_lines.append(f"[Reply now only as {my_name}.]")
+    messages.append({"role": "user", "content": "\n\n".join(transcript_lines)})
     return messages
 
 
@@ -465,7 +459,6 @@ def call_openai_for_agent(role_prompt: str, speaker: str) -> tuple[str, list]:
         if not getattr(msg, "tool_calls", None):
             reply = (msg.content or "").strip()
             return (reply, messages)
-        # Append assistant message with tool_calls
         messages.append({
             "role": "assistant",
             "content": msg.content or "",
@@ -656,25 +649,27 @@ def main():
         entry = st.session_state.get("openai_request_log")
         with st.expander("Request / response log", expanded=bool(entry)):
             if entry:
-                lines = []
                 agent_name = _speaker_label(entry.get("agent", ""))
                 ts = entry.get("ts")
                 ts_str = _format_in_pst(ts, "%Y-%m-%d %H:%M:%S") if ts else ""
-                lines.append(f"=== {agent_name} — {ts_str} ===")
-                lines.append("Request (messages sent):")
-                for m in entry.get("messages", []):
-                    role = m.get("role", "")
-                    content = (m.get("content") or "").strip()
-                    content_preview = content[:2000] + "..." if len(content) > 2000 else content
-                    lines.append(f"  [{role}]\n  {content_preview}")
-                lines.append("Response:")
-                resp = entry.get("response", "")
-                resp_preview = resp[:2000] + "..." if len(resp) > 2000 else resp
-                lines.append(f"  {resp_preview}")
-                log_text = "\n".join(lines)
+                st.caption(f"{agent_name} — {ts_str}")
+                # Keys include ts so when log updates after agent responds, new widgets show new content (avoid stale session state)
+                log_key_suffix = (ts or "") + "_" + (entry.get("agent") or "")
+                with st.expander("Request", expanded=False):
+                    req_lines = []
+                    for m in entry.get("messages", []):
+                        role = m.get("role", "")
+                        content = (m.get("content") or "").strip()
+                        content_preview = content[:2000] + "..." if len(content) > 2000 else content
+                        req_lines.append(f"[{role}]\n{content_preview}")
+                    req_text = "\n\n".join(req_lines)
+                    st.text_area("Request", value=req_text, height=200, label_visibility="collapsed", disabled=True, key=f"log_request_{log_key_suffix}")
+                with st.expander("Response", expanded=False):
+                    resp = entry.get("response", "")
+                    resp_preview = resp[:2000] + "..." if len(resp) > 2000 else resp
+                    st.text_area("Response", value=resp_preview, height=200, label_visibility="collapsed", disabled=True, key=f"log_response_{log_key_suffix}")
             else:
-                log_text = "No requests yet. Use Respond or @mention an agent to see request/response here."
-            st.text_area("Log", value=log_text, height=300, label_visibility="collapsed", disabled=True)
+                st.caption("No requests yet. Use Respond or @mention an agent to see request/response here.")
 
     left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history
 

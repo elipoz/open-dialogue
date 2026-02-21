@@ -94,7 +94,7 @@ ROLE_INSTRUCTOR = "instructor"
 ROLE_MODERATOR = "moderator"
 
 # Agent-to-agent: cap and probability (stops endless loops)
-AGENT_CROSS_MENTION_N = 10   # max consecutive agent messages before requiring human/Respond
+AGENT_CROSS_MENTION_N = 0   # max consecutive agent messages before requiring human/Respond
 AGENT_CROSS_MENTION_P = 0.35 # probability of triggering the other agent after a reply when not @mentioned (0 = only @mention triggers)
 REFLECTION_DURATION_DEFAULT_MINUTES = 5  # default for "Reflect together" (sidebar: 1–10 min)
 

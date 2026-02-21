@@ -96,9 +96,10 @@ ROLE_MODERATOR = "moderator"
 # Agent-to-agent: cap and probability (stops endless loops)
 AGENT_CROSS_MENTION_N = 10   # max consecutive agent messages before requiring human/Respond
 AGENT_CROSS_MENTION_P = 0.35 # probability of triggering the other agent after a reply when not @mentioned (0 = only @mention triggers)
+REFLECTION_DURATION_DEFAULT_MINUTES = 5  # default for "Reflect together" (sidebar: 1–10 min)
 
 
-def _get_agent_role(agent_key: str, moderator_name: str) -> str:
+def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool = False) -> str:
     """Return full system prompt for agent: fixed identity and role; never speak as others."""
     if agent_key == "agent1":
         name, other = AGENT_1_NAME, AGENT_2_NAME
@@ -106,7 +107,7 @@ def _get_agent_role(agent_key: str, moderator_name: str) -> str:
     else:
         name, other = AGENT_2_NAME, AGENT_1_NAME
         role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
-    return (
+    base = (
         f"You are {name}. {role_text}\n\n"
         f"IDENTITY (strict): You must respond ONLY as {name}. Write only your own words in first person as {name}. "
         f"Never speak as, or on behalf of, the Instructor, the moderator ({moderator_name}), or {other}. "
@@ -127,6 +128,13 @@ def _get_agent_role(agent_key: str, moderator_name: str) -> str:
         f"Reply with your message content only: do not start your reply with 'At <date> <time> <name> said:' or repeat that prefix; "
         f"do not echo your own name or the time of your reply at the start of your response message. "
     )
+    if reflection_mode:
+        base += (
+            "\n\nREFLECTION PHASE: You are now in a short reflection phase with the other agent. "
+            "Reflect on what was said so far in the conversation and respond thoughtfully; the other agent will then do the same. "
+            "Keep your reply focused on reflecting on the discussion."
+        )
+    return base
 
 
 def init_session_state():
@@ -556,8 +564,20 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
     """If this agent's thinking flag is set, call OpenAI, log request/response, persist reply, clear flag, advance pending mentions if any, then maybe trigger other agent (@mention or probability), then rerun."""
     if not st.session_state.get(f"{agent_key}_thinking", False):
         return
+    # Enforce reflection deadline: if past, cancel this run so no agent starts reflecting after the deadline
+    _until = st.session_state.get("reflection_mode_until")
+    if _until is not None:
+        try:
+            _until_float = float(_until)
+        except (TypeError, ValueError):
+            _until_float = 0.0
+        if time.time() >= _until_float:
+            st.session_state.reflection_mode_until = None
+            st.session_state[f"{agent_key}_thinking"] = False
+            return
+    _reflection_mode = bool(st.session_state.get("reflection_mode_until") and time.time() < float(st.session_state.get("reflection_mode_until")))
     with st.spinner(f"{agent_name} thinking…"):
-        reply, messages = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name()), agent_key, stream_placeholder=stream_placeholder)
+        reply, messages = call_openai_for_agent(_get_agent_role(agent_key, _get_moderator_display_name(), reflection_mode=_reflection_mode), agent_key, stream_placeholder=stream_placeholder)
     _log_openai_request(agent_key, messages, reply)
     reply = _strip_agent_name_prefix(reply, agent_name)
     _ts = datetime.now(_UTC)
@@ -568,6 +588,20 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
     st.session_state[f"{agent_key}_needs_intro"] = False
     # Consecutive agent message count (cap to prevent endless agent-to-agent loops)
     st.session_state.agent_chain_count = st.session_state.get("agent_chain_count", 0) + 1
+    # Reflection mode: agents take turns until deadline; when time's up, clear and fall through
+    _reflection_until = st.session_state.get("reflection_mode_until")
+    if _reflection_until is not None:
+        try:
+            _deadline = float(_reflection_until)
+        except (TypeError, ValueError):
+            _deadline = 0.0
+        _now = time.time()
+        if _now < _deadline:
+            _other = "agent2" if agent_key == "agent1" else "agent1"
+            st.session_state[f"{_other}_thinking"] = True
+            st.rerun()
+        else:
+            st.session_state.reflection_mode_until = None
     _pending = st.session_state.get("pending_mention_agents", [])
     if _pending and _pending[0] == agent_key:
         st.session_state.pending_mention_agents = _pending[1:]
@@ -746,7 +780,7 @@ def main():
             max_value=10,
             value=AGENT_CROSS_MENTION_N,
             step=1,
-            help="Max consecutive agent messages before requiring human/Respond. N=0 or N=1: no chain (at most one agent reply).",
+            help="Max consecutive agent messages before requiring human.",
             key="agent_cross_mention_n",
         )
         st.number_input(
@@ -756,8 +790,17 @@ def main():
             value=float(AGENT_CROSS_MENTION_P),
             step=0.05,
             format="%.2f",
-            help="Probability (0–0.5) of triggering the other agent after a reply when not @mentioned. P=0: only @mention or naming the other agent triggers; no random chain.",
+            help="Probability (0–0.5) of triggering the other agent after an agent reply.",
             key="agent_cross_mention_p",
+        )
+        st.number_input(
+            "Reflection duration (min)",
+            min_value=1,
+            max_value=10,
+            value=REFLECTION_DURATION_DEFAULT_MINUTES,
+            step=1,
+            help="Duration in minutes for reflecting together.",
+            key="reflection_duration_minutes",
         )
         st.divider()
         # Participants: human users who posted in this conversation
@@ -846,6 +889,7 @@ def main():
                 st.markdown(f"**{_stream_label}:**")
                 _stream_ph = st.empty()
                 st.session_state._stream_placeholder = _stream_ph
+                st.caption("Now")
         for entry in messages:
             party, content = entry[0], entry[1]
             ts = entry[2] if len(entry) >= 3 else None
@@ -865,6 +909,7 @@ def main():
                 st.markdown(f"**{_stream_label}:**")
                 _stream_ph = st.empty()
                 st.session_state._stream_placeholder = _stream_ph
+                st.caption("Now")
 
     left_col, right_col = st.columns([1, 1])  # 50% left, 50% conversation history
 
@@ -889,7 +934,8 @@ def main():
         # Same width for chat input and agent rows; each Respond button on the same row as its agent (column [4,1] so button fits "Respond" on one line)
         row0_col1, row0_col2 = st.columns([4, 1])
         with row0_col1:
-            human_prompt = st.chat_input("Type a message and press Enter to send")
+            _agent_thinking = st.session_state.get("agent1_thinking") or st.session_state.get("agent2_thinking")
+            human_prompt = st.chat_input("Type a message and press Enter to send", disabled=_agent_thinking)
         # Move focus to chat input after selecting Moderator/Instructor
         if st.session_state.get("focus_chat_input", False):
             st.session_state.focus_chat_input = False
@@ -906,6 +952,32 @@ def main():
                 """,
                 unsafe_allow_html=True,
             )
+        # Reflect together / Stop reflecting: under user message input
+        _reflection_until = st.session_state.get("reflection_mode_until")
+        _reflection_active = _reflection_until is not None and time.time() < _reflection_until
+        _reflect_mins = max(1, min(10, int(st.session_state.get("reflection_duration_minutes", REFLECTION_DURATION_DEFAULT_MINUTES))))
+        _ref_btn_col, _stop_btn_col = st.columns(2)
+        with _ref_btn_col:
+            if st.button(
+                "Reflect together",
+                key="reflect_together_btn",
+                disabled=_reflection_active,
+                help=f"Trigger agents to take turns reflecting for the next {_reflect_mins} minutes.",
+            ) and not _reflection_active:
+                st.session_state.reflection_mode_until = float(time.time()) + (_reflect_mins * 60)
+                st.session_state.agent1_thinking = True
+                st.rerun()
+        with _stop_btn_col:
+            if st.button(
+                "Stop reflecting",
+                key="stop_reflecting_btn",
+                disabled=not _reflection_active,
+                help="Stop the agent's reflection loop.",
+            ) and _reflection_active:
+                st.session_state.reflection_mode_until = None
+                st.session_state.agent1_thinking = False
+                st.session_state.agent2_thinking = False
+                st.rerun()
 
         row1_col1, row1_col2 = st.columns([4, 1])
         _render_agent_role_row("agent1", AGENT_1_NAME, AGENT_1_ROLE, row1_col1, row1_col2)

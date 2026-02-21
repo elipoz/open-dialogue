@@ -68,11 +68,16 @@ def load_messages(conversation_id: str) -> list[tuple]:
                     if hasattr(ts, "isoformat"):
                         dt = ts
                     else:
-                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                    # Normalize to UTC so display is correct regardless of DB/client timezone
+                    if getattr(dt, "tzinfo", None) is None:
+                        dt = dt.replace(tzinfo=_UTC)
+                    else:
+                        dt = dt.astimezone(_UTC)
                 except Exception:
-                    dt = datetime.now()
+                    dt = datetime.now(_UTC)
             else:
-                dt = datetime.now()
+                dt = datetime.now(_UTC)
             out.append((row.get("role", ""), row.get("message", ""), dt))
         return out
     except Exception:
@@ -105,20 +110,14 @@ def delete_conversation(conversation_id: str) -> bool:
 
 def persist_message(conversation_id: str, author_display_name: str, message: str, created_at: datetime | None = None) -> None:
     """Insert one message into od_messages. role column = author_display_name (human or agent name).
-       The created_at is stored in UTC so all users have consistent timestamps.
+       Uses DB server now() for created_at so timestamps are correct even if the app host clock is wrong (e.g. stuck at process start).
        No-op if Supabase unavailable."""
     sb = get_supabase()
     if not sb or not conversation_id:
         return
     try:
         payload = {"conversation_id": conversation_id, "role": author_display_name, "message": message}
-        if created_at is not None:
-            # Always store in UTC: normalize so Postgres timestamptz is unambiguous (avoids mixed UTC/PST from different app hosts)
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=_UTC)
-            else:
-                created_at = created_at.astimezone(_UTC)
-            payload["created_at"] = created_at.isoformat()
+        # Omit created_at so Postgres DEFAULT now() is used (DB server time); avoids wrong time when app host clock is stale
         sb.table("od_messages").insert(payload).execute()
     except Exception:
         pass

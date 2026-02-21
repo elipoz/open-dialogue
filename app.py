@@ -479,13 +479,13 @@ def _truncate_middle(text: str, max_len: int) -> str:
 
 
 def _log_openai_request(speaker: str, messages: list, response_text: str) -> None:
-    """Store the latest request/response only (overwrites previous). Use ISO ts for session state."""
-    sanitized = [{"role": m.get("role"), "content": (m.get("content") or "")[:8000]} for m in messages]
+    """Store the latest request/response only (overwrites previous). Use ISO ts for session state. Long content is middle-truncated so start and end are visible."""
+    sanitized = [{"role": m.get("role"), "content": _truncate_middle((m.get("content") or ""), 2000)} for m in messages]
     now = datetime.now(ZoneInfo("UTC"))
     st.session_state.openai_request_log = {
         "agent": speaker,
         "messages": sanitized,
-        "response": response_text[:8000] if response_text else "",
+        "response": _truncate_middle(response_text, 2000) if response_text else "",
         "ts": now.isoformat(),
     }
 
@@ -828,14 +828,12 @@ def main():
                     for m in entry.get("messages", []):
                         role = m.get("role", "")
                         content = (m.get("content") or "").strip()
-                        content_preview = _truncate_middle(content, 2000)
-                        req_lines.append(f"[{role}]\n{content_preview}")
+                        req_lines.append(f"[{role}]\n{content}")
                     req_text = "\n\n".join(req_lines)
                     st.text_area("Request", value=req_text, height=200, label_visibility="collapsed", disabled=True, key=f"log_request_{log_key_suffix}")
                 with st.expander("Response", expanded=False):
                     resp = entry.get("response", "")
-                    resp_preview = _truncate_middle(resp, 2000)
-                    st.text_area("Response", value=resp_preview, height=200, label_visibility="collapsed", disabled=True, key=f"log_response_{log_key_suffix}")
+                    st.text_area("Response", value=resp, height=200, label_visibility="collapsed", disabled=True, key=f"log_response_{log_key_suffix}")
             else:
                 st.caption("No requests yet. Use Respond or @mention an agent to see request/response here.")
 

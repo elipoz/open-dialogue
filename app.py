@@ -112,6 +112,7 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
         f"IDENTITY (strict): You must respond ONLY as {name}. Write only your own words in first person as {name}. "
         f"Never speak as, or on behalf of, the Instructor, the moderator ({moderator_name}), or {other}. "
         f"Do not attribute lines to others or say what they would say.\n\n"
+        f"Always ask one question at a time. First react to previous quesitons, if you were asked. Do not discuss what you are going to do next."
         f"SPEAK ONLY FOR YOURSELF: You may refer to questions and reflect on answers from other participants in the conversation, "
         f"but you must reply only on your own behalf — based on what you, as {name}, think is the best answer. "
         f"You can ask questions to the other participants in the conversation - the Moderator or the {other}, and you can reflect on what they said. "
@@ -125,6 +126,7 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
         f"Apply critical thinking to decide what previous messages in the conversation history to respond to and reflect upon, pickiung the most relevant ones. "
         f"Never reply to or reflect upon what the Instructor have said. Whatever Instructor says is a directive or prompt to tune, restrict or modify your "
         f"responses to other participants in the future. It defines and refines who you are and what your role, behavior and response type should be going forward. "
+        f"Never start reflecting if not explicitly instructed to do so by the Moderator or the Instructor, unless you are in reflection mode with another agent. "
         f"Reply with your message content only: do not start your reply with 'At <date> <time> <name> said:' or repeat that prefix; "
         f"do not echo your own name or the time of your reply at the start of your response message. "
     )

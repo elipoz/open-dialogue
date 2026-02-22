@@ -5,6 +5,7 @@ description = "3-way dialogue between a human moderator and two AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "google-genai>=1.0.0",
     "openai>=2.0.0",
     "python-dotenv>=1.0.0",
     "python-docx>=1.0.0",

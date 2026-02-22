@@ -150,6 +150,13 @@ def _get_gemini_model() -> str:
     return (os.environ.get("GEMINI_MODEL") or "").strip() or "gemini-2.0-flash"
 
 
+def get_model_status() -> str:
+    """Return the model (reasoning) status for the UI, e.g. 'Model: OpenAI / gpt-5-mini' or 'Model: Gemini / gemini-2.0-flash'."""
+    if _use_gemini():
+        return f"Model: Gemini / {_get_gemini_model()}"
+    return f"Model: OpenAI / {_get_openai_model()}"
+
+
 def _openai_messages_to_gemini_contents(messages: list) -> tuple[list, Optional[str]]:
     """Convert OpenAI-format messages to (Gemini contents list, system_instruction or None).
     Drops system from contents and returns it as second element for config.system_instruction."""

@@ -18,7 +18,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 from doc_export import export_dialogue_to_docx
 from dotenv import load_dotenv
-from model import call_model_for_agent, get_tavily_client, get_tavily_status
+from model import call_model_for_agent, get_model_status, get_tavily_client, get_tavily_status
 from supabase_client import (
     conversation_exists,
     create_conversation,
@@ -739,7 +739,8 @@ def main():
 
     st.title(f"{_mod_name}'s Open Dialogue with AI")
 
-    # Tavily caption only after name is set (not on the name-entry page)
+    # Model and Tavily status
+    st.caption(get_model_status())
     st.caption(get_tavily_status())
 
     # CSS: force thinking spinner left-aligned; prevent button text wrapping (e.g. Respond)

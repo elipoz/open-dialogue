@@ -95,6 +95,38 @@ ROLE_MODERATOR = "moderator"
 AGENT_CROSS_MENTION_N = 0   # max consecutive agent messages before requiring human/Respond
 AGENT_CROSS_MENTION_P = 0.35 # probability of triggering the other agent after a reply when not @mentioned (0 = only @mention triggers)
 REFLECTION_DURATION_DEFAULT_MINUTES = 5  # default for "Reflect together" (sidebar: 1–10 min)
+
+
+def _get_openai_model() -> str:
+    """Model from OPENAI_MODEL env; default gpt-5-mini."""
+    return os.environ.get("OPENAI_MODEL").strip() or "gpt-5-mini"
+
+
+def _get_openai_temperature(model: str) -> float | None:
+    """Temperature for chat completion: only when model is gpt-4o-mini, from OPENAI_TEMPERATURE; else None (API default)."""
+    if model != "gpt-4o-mini":
+        return None
+    s = (os.environ.get("OPENAI_TEMPERATURE") or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _get_openai_chat_kwargs(messages: list, *, tools: list | None = None, stream: bool = False) -> dict:
+    """Build kwargs for OpenAI chat.completions.create: model, messages, stream, optional tools and temperature."""
+    model = _get_openai_model()
+    kwargs = {"model": model, "messages": messages, "stream": stream}
+    if tools:
+        kwargs["tools"] = tools
+    temp = _get_openai_temperature(model)
+    if temp is not None:
+        kwargs["temperature"] = temp
+    return kwargs
+
+
 OD_PRINCIPLES = """
 # Principles of Open Dialogue
 ### Ethics of Multicultural, Postcolonial, and Polyphonic Inquiry
@@ -658,9 +690,7 @@ def _log_openai_request(speaker: str, messages: list, response_text: str) -> Non
 def _stream_chat_completion(client, messages: list, tools: list | None, placeholder) -> str:
     """Run a streaming chat completion; update placeholder with accumulated text. Returns full reply text. No tool_calls in messages.
     Uses plain text for the stream so partial markdown (headings, lists, **) never causes font/size jumps."""
-    kwargs = {"model": "gpt-5-mini", "messages": messages, "stream": True}
-    if tools:
-        kwargs["tools"] = tools
+    kwargs = _get_openai_chat_kwargs(messages, tools=tools, stream=True)
     stream = client.chat.completions.create(**kwargs)
     accumulated = ""
     for chunk in stream:
@@ -686,9 +716,7 @@ def call_openai_for_agent(role_prompt: str, speaker: str, stream_placeholder=Non
         if not tools and stream_placeholder:
             reply = _stream_chat_completion(client, messages, None, stream_placeholder)
             return (reply, messages)
-        kwargs = {"model": "gpt-5-mini", "messages": messages}
-        if tools:
-            kwargs["tools"] = tools
+        kwargs = _get_openai_chat_kwargs(messages, tools=tools, stream=False)
         response = client.chat.completions.create(**kwargs)
         choice = response.choices[0]
         msg = choice.message
@@ -720,7 +748,8 @@ def call_openai_for_agent(role_prompt: str, speaker: str, stream_placeholder=Non
     if stream_placeholder:
         reply = _stream_chat_completion(client, messages, None, stream_placeholder)
     else:
-        final = client.chat.completions.create(model="gpt-5-mini", messages=messages)
+        kwargs = _get_openai_chat_kwargs(messages, stream=False)
+        final = client.chat.completions.create(**kwargs)
         reply = (final.choices[0].message.content or "").strip()
     return (reply, messages)
 

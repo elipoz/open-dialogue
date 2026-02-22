@@ -1,6 +1,6 @@
 # Checkpoint
 
-**Date:** 2026-02-21
+**Date:** 2026-02-16
 
 ## Summary
 
@@ -28,7 +28,7 @@ Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Mode
 - **Timestamps in PST:** All UI timestamps in **America/Los_Angeles (PST)**. `_format_in_pst()` handles both datetime and ISO strings from Supabase; new conversation label uses `_now_pst()`.
 - **OpenAI context:** Conversation sent to OpenAI as **one [user] message**: full transcript with **"At &lt;timestamp&gt; &lt;role&gt; said: &lt;message&gt;"** (chronological, including this agent's past replies) then **[Reply now only as &lt;name&gt;.]**. No per-turn user/assistant; who said what is clear from the transcript. Timestamp is message `created_at` from DB; role uses actual names. Agent system prompt instructs: reply with message content only—do not echo "At … said:" or your name as a label.
 - **Agent replies:** If the model echoes "At &lt;timestamp&gt; &lt;name&gt; said:" we strip it (`_strip_at_timestamp_said_prefix`); leading "Name: " is also stripped (`_strip_agent_name_prefix`) so the UI label is not duplicated.
-- **Refactoring:** Agent thinking flow in `_run_agent_thinking_if_set(agent_key, agent_name)`; agent role row (expander + form + Respond button) in `_render_agent_role_row(agent_key, agent_name, agent_role, role_col, button_col)`.
+- **Refactoring:** Agent thinking flow in `_run_agent_thinking_if_set(agent_key, agent_name)`; agent role row (expander + form + Respond button) in `_render_agent_role_row(agent_key, agent_name, agent_role, role_col, button_col)`. OpenAI chat kwargs built in one place via `_get_openai_chat_kwargs(messages, tools=None, stream=False)`; model and temperature from `_get_openai_model()` / `_get_openai_temperature(model)`.
 - **Password (Streamlit Cloud):** When `APP_PASSWORD` or `APP_ADMIN_PASSWORD` is set and running on Streamlit Cloud, the login screen includes name + password + Submit (password omitted when running locally). Admin logs in with name "Admin" and `APP_ADMIN_PASSWORD`; others use `APP_PASSWORD`.
 - **Tavily:** Optional `TAVILY_API_KEY` in `.env` for agent web search. Status line under title shows enabled / disabled / error (only after moderator name is set; not on the name-entry page).
 - **Model:** OpenAI model **gpt-5-mini** (no temperature param; model uses default). Agent prompt instructs taking a different perspective from the other agent when relevant.

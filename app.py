@@ -49,12 +49,16 @@ def _require_password() -> bool:
 # Agent names and roles (populate manually)
 # -----------------------------------------------------------------------------
 AGENT_1_NAME = "Gosha"  # Display name (fixed); role text is editable in UI
-AGENT_1_ROLE = (f"You are an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity. "
-                f"You are knowledgeable in the open dialogue psychotherapeutic approach, its goals and its philosophy.")
+AGENT_1_ROLE = (
+    "You are an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity. "
+    "You bring a focus on the open dialogue psychotherapeutic approach as practice: its philosophy, how it is done, its goals in the context of the conversation, and multiple voices."
+)
 
 AGENT_2_NAME = "Joshi"
-AGENT_2_ROLE = (f"You are an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity. "
-                f"You are knowledgeable in the open dialogue psychotherapeutic approach, its goals and its philosophy.")
+AGENT_2_ROLE = (
+    "You are an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity. "
+    "You bring a focus on cultural and postcolonial perspectives in polyphonic dialogue: whose voices are heard, and how open dialogue intersects with different worldviews and histories."
+)
 
 # Party keys for dialogue entries and role checks (human roles)
 ROLE_INSTRUCTOR = "instructor"
@@ -268,8 +272,10 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
         base += (
             f"\n\n"
             f"REFLECTION PHASE: You are now in a short reflection phase with {other}. "
-            f"Reflect on what all the participants said so far in the conversation and respond thoughtfully; {other} will then do the same. "
-            f"Keep your reply focused on reflecting on the discussion and your own role in the conversation. Do not parrot, simply repeating or rephrasing what others said. "
+            f"Reflect on what all participants said in the conversation so far, and on your own role in it. "
+            f"Do NOT paraphrase, summarize, parrot, or repeat what {other} or others just said. Respond thoughtfully and creatively."
+            f"Offer your own distinct perspective: agree or disagree from your angle, add a new idea or thought, or question something that was said. "
+            f"If {other} reflected just above, respond to their reflection with a different take — do not merely echo it. "
         )
     return base
 

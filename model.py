@@ -150,6 +150,18 @@ def _get_gemini_model() -> str:
     return (os.environ.get("GEMINI_MODEL") or "").strip() or "gemini-2.0-flash"
 
 
+def _get_gemini_temperature() -> Optional[float]:
+    """Temperature for Gemini (0–2). From GEMINI_TEMPERATURE; default 0.7 for more varied, less echo-like responses."""
+    s = (os.environ.get("GEMINI_TEMPERATURE") or "").strip()
+    if s == "":
+        return 1.0
+    try:
+        t = float(s)
+        return max(0.0, min(2.0, t)) if t is not None else 0.7
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def get_model_status() -> str:
     """Return the model (reasoning) status for the UI, e.g. 'Model: OpenAI / gpt-5-mini' or 'Model: Gemini / gemini-2.0-flash'."""
     if _use_gemini():
@@ -232,7 +244,10 @@ def _stream_chat_completion(client, messages: list, tools: Optional[list], place
 def _stream_gemini(client, contents: list, system_instruction: Optional[str], tools: Optional[list], placeholder) -> str:
     """Run streaming Gemini generate_content; update placeholder with accumulated text. Returns full reply text."""
     model = _get_gemini_model()
-    config = genai_types.GenerateContentConfig(system_instruction=system_instruction or "")
+    config = genai_types.GenerateContentConfig(
+        system_instruction=system_instruction or "",
+        temperature=_get_gemini_temperature(),
+    )
     if tools:
         config.tools = tools
     accumulated = ""
@@ -313,7 +328,10 @@ def call_gemini_for_agent(
         if not gemini_tools and stream_placeholder:
             reply = _stream_gemini(client, contents, system_instruction, None, stream_placeholder)
             return (reply, messages)
-        config = genai_types.GenerateContentConfig(system_instruction=system_instruction or "")
+        config = genai_types.GenerateContentConfig(
+            system_instruction=system_instruction or "",
+            temperature=_get_gemini_temperature(),
+        )
         if gemini_tools:
             config.tools = gemini_tools
         response = client.models.generate_content(model=_get_gemini_model(), contents=contents, config=config)
@@ -391,7 +409,10 @@ def call_gemini_for_agent(
     if stream_placeholder:
         reply = _stream_gemini(client, contents, system_instruction, None, stream_placeholder)
     else:
-        config = genai_types.GenerateContentConfig(system_instruction=system_instruction or "")
+        config = genai_types.GenerateContentConfig(
+            system_instruction=system_instruction or "",
+            temperature=_get_gemini_temperature(),
+        )
         final = client.models.generate_content(model=_get_gemini_model(), contents=contents, config=config)
         reply = (final.text or "").strip()
     return (reply, messages)

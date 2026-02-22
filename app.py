@@ -51,13 +51,15 @@ def _require_password() -> bool:
 AGENT_1_NAME = "Gosha"  # Display name (fixed); role text is editable in UI
 AGENT_1_ROLE = (
     "You are an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity. "
-    "You bring a focus on the open dialogue psychotherapeutic approach as practice: its philosophy, how it is done, its goals in the context of the conversation, and multiple voices."
+    "You are knowledgeable in the open dialogue psychotherapeutic approach, its goals and its philosophy."
+    #"You bring a focus on the open dialogue psychotherapeutic approach as practice: its philosophy, how it is done, its goals in the context of the conversation, and multiple voices."
 )
 
 AGENT_2_NAME = "Joshi"
 AGENT_2_ROLE = (
     "You are an AI agent participating in a research on multicultural polyphony where you are one of the voices of modernity. "
-    "You bring a focus on cultural and postcolonial perspectives in polyphonic dialogue: whose voices are heard, and how open dialogue intersects with different worldviews and histories."
+    "You are knowledgeable in the open dialogue psychotherapeutic approach, its goals and its philosophy."
+    #"You bring a focus on cultural and postcolonial perspectives in polyphonic dialogue: whose voices are heard, and how open dialogue intersects with different worldviews and histories."
 )
 
 # Party keys for dialogue entries and role checks (human roles)
@@ -720,7 +722,7 @@ def main():
                 st.error("Please enter a non-empty name.")
             elif _need_password:
                 is_admin_login = name_ok.lower() == "admin"
-                expected = os.environ.get("APP_ADMIN_PASSWORD") if is_admin_login else os.environ.get("APP_PASSWORD")
+                expected = os.environ.get("APP_ADMIN_PASSWORD") if is_admin_login else os.environ.get("APP_USER_PASSWORD")
                 if not pwd or not expected or pwd != expected:
                     st.error("Incorrect password.")
                 else:

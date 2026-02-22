@@ -50,19 +50,19 @@ def get_tavily_status() -> str:
     key_set = bool(os.environ.get("TAVILY_API_KEY"))
     err = get_tavily_error()
     if client:
-        return "Tavily (web search): enabled — agents can look up current information."
+        return "Web search enabled — agents can look up current information."
     if key_set and err:
-        return f"Tavily (web search): disabled — key set but client failed: {err}"
+        return f"Web search disabled — TAVILY_API_KEY is set but client failed: {err}"
     if key_set:
-        return "Tavily (web search): disabled — key set but client failed. Check that tavily-python is installed."
-    return "Tavily (web search): disabled — TAVILY_API_KEY not in environment. Add it to .env next to app.py (or run from project root)."
+        return "Web search disabled — TAVILY_API_KEY is set but client failed."
+    return "Web search disabled — TAVILY_API_KEY not in environment."
 
 
 def _run_tavily_search(query: str) -> str:
     """Run a Tavily search and return a summary string for the model."""
     client = get_tavily_client()
     if not client:
-        return "Web search is not available (TAVILY_API_KEY not set)."
+        return "Web search is not available (TAVILY_API_KEY is not set)."
     try:
         response = client.search(query=query, max_results=5, search_depth="basic")
         results = response.get("results", [])
@@ -133,15 +133,22 @@ def _get_openai_chat_kwargs(messages: list, *, tools: Optional[list] = None, str
     return kwargs
 
 
-def _use_gemini() -> bool:
-    """True if USE_MODEL env is 'gemini' and Gemini client is available."""
+def _get_agent_model_env(agent_key: str) -> str:
+    """Return 'gemini' or 'openai' for the given agent. Uses AGENT1_USE_MODEL / AGENT2_USE_MODEL, fallback USE_MODEL."""
+    key = "AGENT1_USE_MODEL" if agent_key == "agent1" else "AGENT2_USE_MODEL"
+    val = (os.environ.get(key) or os.environ.get("USE_MODEL") or "openai").strip().lower()
+    return val if val in ("gemini", "openai") else "openai"
+
+
+def _use_gemini_for_agent(agent_key: str) -> bool:
+    """True if this agent should use Gemini (AGENTn_USE_MODEL or USE_MODEL is 'gemini') and Gemini client is available."""
     if genai is None or genai_types is None:
         return False
-    return (os.environ.get("USE_MODEL") or "").strip().lower() == "gemini"
+    return _get_agent_model_env(agent_key) == "gemini"
 
 
 def _get_gemini_client():
-    """Gemini client using GEMINI_API_KEY. Call only when _use_gemini() is True."""
+    """Gemini client using GEMINI_API_KEY. Call only when the agent uses Gemini."""
     return genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 
@@ -163,10 +170,10 @@ def _get_gemini_temperature() -> Optional[float]:
 
 
 def get_model_status() -> str:
-    """Return the model (reasoning) status for the UI, e.g. 'Model: OpenAI / gpt-5-mini' or 'Model: Gemini / gemini-2.0-flash'."""
-    if _use_gemini():
-        return f"Model: Gemini / {_get_gemini_model()}"
-    return f"Model: OpenAI / {_get_openai_model()}"
+    """Return the model status for the UI, e.g. 'Agent 1: OpenAI / gpt-5-mini · Agent 2: Gemini / gemini-2.0-flash'."""
+    s1 = f"Gemini / {_get_gemini_model()}" if _use_gemini_for_agent("agent1") else f"OpenAI / {_get_openai_model()}"
+    s2 = f"Gemini / {_get_gemini_model()}" if _use_gemini_for_agent("agent2") else f"OpenAI / {_get_openai_model()}"
+    return f"Agent 1: {s1} · Agent 2: {s2}"
 
 
 def _openai_messages_to_gemini_contents(messages: list) -> tuple[list, Optional[str]]:
@@ -267,7 +274,7 @@ def call_openai_for_agent(
 ) -> tuple[str, list]:
     """Call OpenAI chat completion for the given agent. Returns (reply_text, messages_sent)."""
     if OpenAI is None:
-        raise ImportError("The openai package is required when USE_MODEL is not 'gemini'. Install with: pip install openai")
+        raise ImportError("The openai package is required when an agent uses OpenAI.")
     role_text_only = None
     messages = build_messages_for_agent(role_prompt, speaker, role_text_only)
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -426,7 +433,7 @@ def call_model_for_agent(
     build_messages_for_agent: Callable[[str, str, Optional[str]], list],
 ) -> tuple[str, list]:
     """Call OpenAI or Gemini for the given agent. Returns (reply_text, messages_sent)."""
-    if _use_gemini():
+    if _use_gemini_for_agent(speaker):
         return call_gemini_for_agent(
             role_prompt, speaker, stream_placeholder,
             build_messages_for_agent=build_messages_for_agent,

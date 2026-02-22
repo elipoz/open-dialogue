@@ -26,7 +26,7 @@ Optional (for agent web search):
 TAVILY_API_KEY=tvly-...
 ```
 
-**Password protection (on Streamlit Cloud only):** The app shows a password screen only when it detects it’s running on Streamlit Cloud (e.g. `/mount/src` or `STREAMLIT_SHARING_MODE=true`) and `APP_PASSWORD` is set. When you run locally, the password screen is skipped.
+**Password protection (on Streamlit Cloud only):** The app shows a password screen only when it detects it’s running on Streamlit Cloud (e.g. `/mount/src` or `STREAMLIT_SHARING_MODE=true`) and `APP_USER_PASSWORD` is set. When you run locally, the password screen is skipped.
 
 ## Run
 

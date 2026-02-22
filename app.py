@@ -292,9 +292,9 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
         name, other = AGENT_2_NAME, AGENT_1_NAME
         role_text = st.session_state.get("agent2_role", AGENT_2_ROLE)
     base = (
-        f"You are {name}. {role_text}"
+        f"IDENTITY (strict): You are {name}. {role_text}"
         f"\n\n"
-        f"IDENTITY (strict): You must respond ONLY as {name}. Write only your own words in first person as {name}. "
+        f"You must respond ONLY as {name}. Write only your own words in first person as {name}. "
         f"You are part of an ongoing conversation between multiple participants - you, {other} and one, two or more human Moderators. "
         f"\n\n"
         f"# Here are your core guidelines:\n"
@@ -327,9 +327,10 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
     )
     if reflection_mode:
         base += (
-            "\n\nREFLECTION PHASE: You are now in a short reflection phase with the other agent. "
-            "Reflect on what was said so far in the conversation and respond thoughtfully; the other agent will then do the same. "
-            "Keep your reply focused on reflecting on the discussion."
+            f"\n\n"
+            f"REFLECTION PHASE: You are now in a short reflection phase with {other}. "
+            f"Reflect on what all the participants said so far in the conversation and respond thoughtfully; {other} will then do the same. "
+            f"Keep your reply focused on reflecting on the discussion and your own role in the conversation. "
         )
     return base
 

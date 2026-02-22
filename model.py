@@ -176,6 +176,8 @@ def _openai_messages_to_gemini_contents(messages: list) -> tuple[list, Optional[
             parts = []
             if content:
                 parts.append(genai_types.Part.from_text(text=content))
+            # Gemini 3/2.5 require thought_signature on function_call parts; use dummy when replayed from messages.
+            _dummy_sig = b"skip_thought_signature_validator"
             for tc in m.get("tool_calls") or []:
                 fn = tc.get("function") or {}
                 name = fn.get("name") or ""
@@ -184,7 +186,8 @@ def _openai_messages_to_gemini_contents(messages: list) -> tuple[list, Optional[
                     args = json.loads(args_str)
                 except json.JSONDecodeError:
                     args = {}
-                parts.append(genai_types.Part.from_function_call(name=name, args=args))
+                fc = genai_types.FunctionCall(name=name, args=args)
+                parts.append(genai_types.Part(function_call=fc, thought_signature=_dummy_sig))
             if parts:
                 contents.append(genai_types.Content(role="model", parts=parts))
             continue
@@ -314,15 +317,19 @@ def call_gemini_for_agent(
         if gemini_tools:
             config.tools = gemini_tools
         response = client.models.generate_content(model=_get_gemini_model(), contents=contents, config=config)
-        text = (response.text or "").strip()
+        cand = response.candidates[0] if getattr(response, "candidates", None) else None
+        model_response_parts = getattr(cand.content, "parts", None) if cand and getattr(cand, "content", None) else None
+        # Build text from parts to avoid SDK warning when response contains function_call parts
+        if model_response_parts:
+            text = "".join(getattr(p, "text", "") or "" for p in model_response_parts).strip()
+        else:
+            text = (response.text or "").strip()
         function_calls = getattr(response, "function_calls", None) or []
-        if not function_calls and getattr(response, "candidates", None):
-            cand = response.candidates[0] if response.candidates else None
-            if cand and getattr(cand, "content", None) and getattr(cand.content, "parts", None):
-                for part in cand.content.parts:
-                    fc = getattr(part, "function_call", None)
-                    if fc is not None:
-                        function_calls.append(fc)
+        if not function_calls and model_response_parts:
+            for part in model_response_parts:
+                fc = getattr(part, "function_call", None)
+                if fc is not None:
+                    function_calls.append(fc)
         if not function_calls:
             reply = text
             if stream_placeholder and reply:
@@ -342,13 +349,28 @@ def call_gemini_for_agent(
                 args = {}
             return name, args
 
-        model_parts = []
-        if text:
-            model_parts.append(genai_types.Part.from_text(text=text))
-        for fc in function_calls:
-            name, args = _fc_name_args(fc)
-            model_parts.append(genai_types.Part.from_function_call(name=name, args=args))
-        contents.append(genai_types.Content(role="model", parts=model_parts))
+        # Rebuild model parts so every function_call has thought_signature (required for Gemini 3 / 2.5).
+        # Use part.thought_signature when present, else dummy to skip validation (per Gemini docs).
+        _DUMMY_THOUGHT_SIG = b"skip_thought_signature_validator"
+        if model_response_parts:
+            new_parts = []
+            for part in model_response_parts:
+                fc = getattr(part, "function_call", None)
+                if fc is not None:
+                    sig = getattr(part, "thought_signature", None) or _DUMMY_THOUGHT_SIG
+                    new_parts.append(genai_types.Part(function_call=fc, thought_signature=sig))
+                else:
+                    new_parts.append(part)
+            contents.append(genai_types.Content(role="model", parts=new_parts))
+        else:
+            model_parts = []
+            if text:
+                model_parts.append(genai_types.Part.from_text(text=text))
+            for fc in function_calls:
+                name, args = _fc_name_args(fc)
+                fc_obj = genai_types.FunctionCall(name=name, args=args)
+                model_parts.append(genai_types.Part(function_call=fc_obj, thought_signature=_DUMMY_THOUGHT_SIG))
+            contents.append(genai_types.Content(role="model", parts=model_parts))
         tool_results = []
         for fc in function_calls:
             name, args = _fc_name_args(fc)

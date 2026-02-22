@@ -1,6 +1,6 @@
 # Checkpoint
 
-**Date:** 2026-02-16
+**Date:** 2026-02-22
 
 ## Summary
 
@@ -28,9 +28,9 @@ Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Mode
 - **Timestamps in PST:** All UI timestamps in **America/Los_Angeles (PST)**. `_format_in_pst()` handles both datetime and ISO strings from Supabase; new conversation label uses `_now_pst()`.
 - **OpenAI context:** Conversation sent to OpenAI as **one [user] message**: full transcript with **"At &lt;timestamp&gt; &lt;role&gt; said: &lt;message&gt;"** (chronological, including this agent's past replies) then **[Reply now only as &lt;name&gt;.]**. No per-turn user/assistant; who said what is clear from the transcript. Timestamp is message `created_at` from DB; role uses actual names. Agent system prompt instructs: reply with message content only—do not echo "At … said:" or your name as a label.
 - **Agent replies:** If the model echoes "At &lt;timestamp&gt; &lt;name&gt; said:" we strip it (`_strip_at_timestamp_said_prefix`); leading "Name: " is also stripped (`_strip_agent_name_prefix`) so the UI label is not duplicated.
-- **Refactoring:** Agent thinking flow in `_run_agent_thinking_if_set(agent_key, agent_name)`; agent role row (expander + form + Respond button) in `_render_agent_role_row(agent_key, agent_name, agent_role, role_col, button_col)`. Model calls via `call_model_for_agent`, which dispatches to `call_openai_for_agent` or `call_gemini_for_agent`. OpenAI: `_get_openai_chat_kwargs(messages, tools=None, stream=False)`; model/temperature from `_get_openai_model()` / `_get_openai_temperature(model)`. Gemini: `_openai_messages_to_gemini_contents`, `_gemini_search_tool`, `_stream_gemini`.
+- **Refactoring:** Model and Tavily logic live in **model.py** (no app import). Agent thinking in `_run_agent_thinking_if_set`; role row in `_render_agent_role_row`. App calls `call_model_for_agent(..., build_messages_for_agent=_build_messages_for_model)`; model dispatches to OpenAI or Gemini and uses Tavily internally. **model.py:** `get_tavily_client`, `get_tavily_error`, `get_tavily_status()` (caption string), `call_model_for_agent`, `SEARCH_TOOL`; OpenAI/Gemini helpers and `_run_tavily_search` internal.
 - **Password (Streamlit Cloud):** When `APP_PASSWORD` or `APP_ADMIN_PASSWORD` is set and running on Streamlit Cloud, the login screen includes name + password + Submit (password omitted when running locally). Admin logs in with name "Admin" and `APP_ADMIN_PASSWORD`; others use `APP_PASSWORD`.
-- **Tavily:** Optional `TAVILY_API_KEY` in `.env` for agent web search. Status line under title shows enabled / disabled / error (only after moderator name is set; not on the name-entry page).
+- **Tavily:** Optional `TAVILY_API_KEY` in `.env`; client and search in **model.py**. Status caption under title via `get_tavily_status()` (enabled / disabled / error); shown only after moderator name is set.
 - **Model:** Backend selected by **USE_MODEL** (.env): **openai** or **gemini**. OpenAI: **OPENAI_MODEL** (default gpt-5-mini), optional **OPENAI_TEMPERATURE** for gpt-4o-mini. Gemini: **GEMINI_API_KEY** required, **GEMINI_MODEL** (default gemini-2.0-flash). Optional imports for both (try/except); missing package raises clear error when that backend is selected. Agent prompt instructs taking a different perspective from the other agent when relevant.
 - **Request / response log:** In sidebar below Participants; latest request and response after each Respond or @mention. Two collapsible subsections (Request, Response) inside the main expander. Truncation is only for this log (not for the API): in `_log_openai_request`, each message and the response are middle-truncated to 2000 chars via `_truncate_middle` once; the UI displays that stored content as-is. Widget keys include log ts+agent so content refreshes when a new agent reply is logged. Log written in `_run_agent_thinking_if_set` after `call_model_for_agent` returns.
 - **Timestamps in DB:** Message `created_at` is set by Postgres `DEFAULT now()` on insert (no app-supplied value) so timestamps are correct even when the app host clock is wrong (e.g. stuck at process start). Loaded timestamps normalized to UTC in `load_messages`. UI timestamps in PST. While an agent is thinking, the streaming placeholder in Conversation history shows caption **"Now"** (no server-time dependency).
@@ -38,7 +38,8 @@ Open Dialogue with AI — Streamlit app for N-way dialogue between multiple Mode
 
 ## Files
 
-- `app.py` — main Streamlit app
+- `app.py` — main Streamlit app (imports call_model_for_agent, get_tavily_client, get_tavily_status from model)
+- `model.py` — OpenAI/Gemini calls and Tavily (get_tavily_client, get_tavily_error, get_tavily_status, call_model_for_agent, SEARCH_TOOL)
 - `supabase_client.py` — Supabase client and helpers (conversation_exists, create_conversation, delete_conversation, list_conversations, load_messages, persist_message)
 - `doc_export.py` — export dialogue to Word (.docx)
 - `supabase_migration.sql` — DROP + CREATE for `od_conversations` and `od_messages` (run in Supabase SQL Editor)

@@ -18,19 +18,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 from doc_export import export_dialogue_to_docx
 from dotenv import load_dotenv
-
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-
-try:
-    from google import genai
-    from google.genai import types as genai_types
-except ImportError:
-    genai = None
-    genai_types = None
-
+from model import call_model_for_agent, get_tavily_client, get_tavily_status
 from supabase_client import (
     conversation_exists,
     create_conversation,
@@ -57,37 +45,6 @@ def _require_password() -> bool:
     return _is_streamlit_cloud()
 
 
-# Optional Tavily client for web search (requires TAVILY_API_KEY in .env)
-_tavily_client = None
-_tavily_error: str | None = None  # set if client creation fails (for UI hint)
-
-def _get_tavily_client():
-    global _tavily_client, _tavily_error
-    if _tavily_client is None and os.environ.get("TAVILY_API_KEY"):
-        try:
-            from tavily import TavilyClient
-            _tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-            _tavily_error = None
-        except Exception as e:
-            _tavily_error = str(e)
-    return _tavily_client
-
-# OpenAI tool definition for web search
-SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Search the web for up-to-date information. ALWAYS use this for: questions about recent or future events, current facts, dates after your knowledge cutoff, or anything you are unsure about. Do not answer such questions from memory—call web_search first, then answer using the results.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query to run"},
-            },
-            "required": ["query"],
-        },
-    },
-}
-
 # -----------------------------------------------------------------------------
 # Agent names and roles (populate manually)
 # -----------------------------------------------------------------------------
@@ -107,106 +64,6 @@ ROLE_MODERATOR = "moderator"
 AGENT_CROSS_MENTION_N = 0   # max consecutive agent messages before requiring human/Respond
 AGENT_CROSS_MENTION_P = 0.35 # probability of triggering the other agent after a reply when not @mentioned (0 = only @mention triggers)
 REFLECTION_DURATION_DEFAULT_MINUTES = 5  # default for "Reflect together" (sidebar: 1–10 min)
-
-
-def _get_openai_model() -> str:
-    """Model from OPENAI_MODEL env; default gpt-5-mini."""
-    return os.environ.get("OPENAI_MODEL").strip() or "gpt-5-mini"
-
-
-def _get_openai_temperature(model: str) -> float | None:
-    """Temperature for chat completion: only when model is gpt-4o-mini, from OPENAI_TEMPERATURE; else None (API default)."""
-    if model != "gpt-4o-mini":
-        return None
-    s = (os.environ.get("OPENAI_TEMPERATURE") or "").strip()
-    if not s:
-        return None
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def _get_openai_chat_kwargs(messages: list, *, tools: list | None = None, stream: bool = False) -> dict:
-    """Build kwargs for OpenAI chat.completions.create: model, messages, stream, optional tools and temperature."""
-    model = _get_openai_model()
-    kwargs = {"model": model, "messages": messages, "stream": stream}
-    if tools:
-        kwargs["tools"] = tools
-    temp = _get_openai_temperature(model)
-    if temp is not None:
-        kwargs["temperature"] = temp
-    return kwargs
-
-
-def _use_gemini() -> bool:
-    """True if USE_MODEL env is 'gemini' and Gemini client is available."""
-    if genai is None or genai_types is None:
-        return False
-    return (os.environ.get("USE_MODEL") or "").strip().lower() == "gemini"
-
-
-def _get_gemini_client():
-    """Gemini client using GEMINI_API_KEY. Call only when _use_gemini() is True."""
-    return genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-
-
-def _get_gemini_model() -> str:
-    """Model from GEMINI_MODEL env; default gemini-2.0-flash."""
-    return (os.environ.get("GEMINI_MODEL") or "").strip() or "gemini-3-flash-preview"
-
-
-def _openai_messages_to_gemini_contents(messages: list) -> tuple[list, str | None]:
-    """Convert OpenAI-format messages to (Gemini contents list, system_instruction or None).
-    Drops system from contents and returns it as second element for config.system_instruction."""
-    system_parts = []
-    contents = []
-    for m in messages:
-        role = (m.get("role") or "user").lower()
-        content = (m.get("content") or "").strip()
-        if role == "system":
-            if content:
-                system_parts.append(content)
-            continue
-        if role == "user":
-            contents.append(genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=content)]))
-            continue
-        if role == "assistant":
-            parts = []
-            if content:
-                parts.append(genai_types.Part.from_text(text=content))
-            for tc in m.get("tool_calls") or []:
-                fn = tc.get("function") or {}
-                name = fn.get("name") or ""
-                args_str = fn.get("arguments") or "{}"
-                try:
-                    args = json.loads(args_str)
-                except json.JSONDecodeError:
-                    args = {}
-                parts.append(genai_types.Part.from_function_call(name=name, args=args))
-            if parts:
-                contents.append(genai_types.Content(role="model", parts=parts))
-            continue
-        if role == "tool":
-            name = "web_search"
-            contents.append(genai_types.Content(
-                role="tool",
-                parts=[genai_types.Part.from_function_response(name=name, response={"result": m.get("content") or ""})],
-            ))
-            continue
-    system_instruction = "\n\n".join(system_parts) if system_parts else None
-    return contents, system_instruction
-
-
-def _gemini_search_tool():
-    """Gemini Tool for web_search (single tool)."""
-    return genai_types.Tool(function_declarations=[
-        genai_types.FunctionDeclaration(
-            name="web_search",
-            description=SEARCH_TOOL["function"]["description"],
-            parameters_json_schema=SEARCH_TOOL["function"]["parameters"],
-        )
-    ])
 
 
 OD_PRINCIPLES = """
@@ -694,11 +551,11 @@ def _render_agent_role_row(agent_key: str, agent_name: str, agent_role: str, rol
 def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str | None = None) -> list:
     """Build OpenAI messages from the full dialogue in chronological order (oldest first). Each message is attributed so the agent has full context."""
     tools_instruction = ""
-    if _get_tavily_client():
+    if get_tavily_client():
         tools_instruction = (
             "\n\nYou have access to a web_search tool. You MUST use it whenever the user asks about: "
             "recent or future events, current facts, or anything after your knowledge cutoff date. "
-            "Do not say you don't have information—call web_search first with a clear query, then answer using the results. "
+            "Do not say you don't have information — call web_search first with a clear query, then answer using the results. "
             "After receiving search results, use them to inform your response."
         )
     intro_required = (
@@ -729,25 +586,10 @@ def build_messages_for_agent(role_prompt: str, speaker: str, role_text_only: str
     return messages
 
 
-def _run_tavily_search(query: str) -> str:
-    """Run a Tavily search and return a summary string for the model."""
-    client = _get_tavily_client()
-    if not client:
-        return "Web search is not available (TAVILY_API_KEY not set)."
-    try:
-        response = client.search(query=query, max_results=5, search_depth="basic")
-        results = response.get("results", [])
-        if not results:
-            return "No results found for that query."
-        parts = []
-        for i, r in enumerate(results[:5], 1):
-            title = r.get("title", "")
-            url = r.get("url", "")
-            content = r.get("content", "")
-            parts.append(f"[{i}] {title}\nURL: {url}\n{content}")
-        return "\n\n".join(parts)
-    except Exception as e:
-        return f"Search failed: {e}"
+def _build_messages_for_model(role_prompt: str, speaker: str, role_text_only: str | None = None) -> list:
+    """Wrapper for model.call_model_for_agent: fills role_text_only when None."""
+    ro = role_text_only if role_text_only is not None else _get_agent_role_text_only(speaker)
+    return build_messages_for_agent(role_prompt, speaker, role_text_only=ro)
 
 
 def _truncate_middle(text: str, max_len: int) -> str:
@@ -770,174 +612,6 @@ def _log_openai_request(speaker: str, messages: list, response_text: str) -> Non
     }
 
 
-def _stream_chat_completion(client, messages: list, tools: list | None, placeholder) -> str:
-    """Run a streaming chat completion; update placeholder with accumulated text. Returns full reply text. No tool_calls in messages.
-    Uses plain text for the stream so partial markdown (headings, lists, **) never causes font/size jumps."""
-    kwargs = _get_openai_chat_kwargs(messages, tools=tools, stream=True)
-    stream = client.chat.completions.create(**kwargs)
-    accumulated = ""
-    for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        content = getattr(delta, "content", None) or (delta.get("content") if isinstance(delta, dict) else None)
-        if content:
-            accumulated += content
-            placeholder.text(accumulated)
-    return accumulated.strip()
-
-
-def _stream_gemini(client, contents: list, system_instruction: str | None, tools: list | None, placeholder) -> str:
-    """Run streaming Gemini generate_content; update placeholder with accumulated text. Returns full reply text."""
-    model = _get_gemini_model()
-    config = genai_types.GenerateContentConfig(system_instruction=system_instruction or "")
-    if tools:
-        config.tools = tools
-    accumulated = ""
-    for chunk in client.models.generate_content_stream(model=model, contents=contents, config=config):
-        if chunk.text:
-            accumulated += chunk.text
-            placeholder.text(accumulated)
-    return accumulated.strip()
-
-
-def call_gemini_for_agent(role_prompt: str, speaker: str, stream_placeholder=None) -> tuple[str, list]:
-    """Call Gemini for the given agent. Returns (reply_text, messages_sent). If stream_placeholder is set, stream the final text into it."""
-    role_text_only = _get_agent_role_text_only(speaker)
-    messages = build_messages_for_agent(role_prompt, speaker, role_text_only=role_text_only)
-    client = _get_gemini_client()
-    gemini_tools = [_gemini_search_tool()] if _get_tavily_client() else None
-    max_tool_rounds = 5
-    for _ in range(max_tool_rounds):
-        contents, system_instruction = _openai_messages_to_gemini_contents(messages)
-        if not gemini_tools and stream_placeholder:
-            reply = _stream_gemini(client, contents, system_instruction, None, stream_placeholder)
-            return (reply, messages)
-        config = genai_types.GenerateContentConfig(system_instruction=system_instruction or "")
-        if gemini_tools:
-            config.tools = gemini_tools
-        response = client.models.generate_content(model=_get_gemini_model(), contents=contents, config=config)
-        text = (response.text or "").strip()
-        function_calls = getattr(response, "function_calls", None) or []
-        if not function_calls and getattr(response, "candidates", None):
-            cand = response.candidates[0] if response.candidates else None
-            if cand and getattr(cand, "content", None) and getattr(cand.content, "parts", None):
-                for part in cand.content.parts:
-                    fc = getattr(part, "function_call", None)
-                    if fc is not None:
-                        function_calls.append(fc)
-        if not function_calls:
-            reply = text
-            if stream_placeholder and reply:
-                for i in range(1, len(reply) + 1):
-                    stream_placeholder.text(reply[:i])
-                    time.sleep(0.01)
-            return (reply, messages)
-        def _fc_name_args(fc):
-            name = getattr(fc, "name", None) or (fc.get("name") if isinstance(fc, dict) else "web_search")
-            args = getattr(fc, "args", None)
-            if args is None and hasattr(fc, "function_call"):
-                args = getattr(fc.function_call, "args", None)
-            if args is None and isinstance(fc, dict):
-                args = fc.get("args") or (fc.get("function_call") or {}).get("args", {})
-            if not isinstance(args, dict):
-                args = {}
-            return name, args
-        model_parts = []
-        if text:
-            model_parts.append(genai_types.Part.from_text(text=text))
-        for fc in function_calls:
-            name, args = _fc_name_args(fc)
-            model_parts.append(genai_types.Part.from_function_call(name=name, args=args))
-        contents.append(genai_types.Content(role="model", parts=model_parts))
-        tool_results = []
-        for fc in function_calls:
-            name, args = _fc_name_args(fc)
-            if name == "web_search":
-                result = _run_tavily_search(args.get("query", ""))
-            else:
-                result = f"Unknown tool: {name}"
-            tool_results.append((name, result))
-            contents.append(genai_types.Content(
-                role="tool",
-                parts=[genai_types.Part.from_function_response(name=name, response={"result": result})],
-            ))
-        messages.append({
-            "role": "assistant",
-            "content": text,
-            "tool_calls": [{"id": "", "function": {"name": n, "arguments": json.dumps(a)}} for n, a in (_fc_name_args(fc) for fc in function_calls)],
-        })
-        for name, result in tool_results:
-            messages.append({"role": "tool", "tool_call_id": "", "content": result})
-    contents, system_instruction = _openai_messages_to_gemini_contents(messages)
-    if stream_placeholder:
-        reply = _stream_gemini(client, contents, system_instruction, None, stream_placeholder)
-    else:
-        config = genai_types.GenerateContentConfig(system_instruction=system_instruction or "")
-        final = client.models.generate_content(model=_get_gemini_model(), contents=contents, config=config)
-        reply = (final.text or "").strip()
-    return (reply, messages)
-
-
-def call_openai_for_agent(role_prompt: str, speaker: str, stream_placeholder=None) -> tuple[str, list]:
-    """Call OpenAI chat completion for the given agent. Returns (reply_text, messages_sent). If stream_placeholder is set, stream the final text into it."""
-    if OpenAI is None:
-        raise ImportError("The openai package is required when USE_MODEL is not 'gemini'. Install with: pip install openai")
-    role_text_only = _get_agent_role_text_only(speaker)
-    messages = build_messages_for_agent(role_prompt, speaker, role_text_only=role_text_only)
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))  # new client per call; each agent has its own independent request
-    tools = [SEARCH_TOOL] if _get_tavily_client() else None
-    max_tool_rounds = 5
-    for _ in range(max_tool_rounds):
-        # When no tools and streaming requested, use stream=True for typed effect; otherwise non-stream to handle tool_calls
-        if not tools and stream_placeholder:
-            reply = _stream_chat_completion(client, messages, None, stream_placeholder)
-            return (reply, messages)
-        kwargs = _get_openai_chat_kwargs(messages, tools=tools, stream=False)
-        response = client.chat.completions.create(**kwargs)
-        choice = response.choices[0]
-        msg = choice.message
-        if not getattr(msg, "tool_calls", None):
-            reply = (msg.content or "").strip()
-            if stream_placeholder and reply:
-                # Already have full content (e.g. from tool round); typewriter effect (plain text to avoid font glitches)
-                for i in range(1, len(reply) + 1):
-                    stream_placeholder.text(reply[:i])
-                    time.sleep(0.01)
-            return (reply, messages)
-        messages.append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": [
-                {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                for tc in msg.tool_calls
-            ],
-        })
-        for tc in msg.tool_calls:
-            name = tc.function.name
-            args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            if name == "web_search":
-                result = _run_tavily_search(args.get("query", ""))
-            else:
-                result = f"Unknown tool: {name}"
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-    # After tool rounds, get a final text response (no more tools)
-    if stream_placeholder:
-        reply = _stream_chat_completion(client, messages, None, stream_placeholder)
-    else:
-        kwargs = _get_openai_chat_kwargs(messages, stream=False)
-        final = client.chat.completions.create(**kwargs)
-        reply = (final.choices[0].message.content or "").strip()
-    return (reply, messages)
-
-
-def call_model_for_agent(role_prompt: str, speaker: str, stream_placeholder=None) -> tuple[str, list]:
-    """Call OpenAI or Gemini chat completion for the given agent. Returns (reply_text, messages_sent). If stream_placeholder is set, stream the final text into it."""
-    if _use_gemini():
-        return call_gemini_for_agent(role_prompt, speaker, stream_placeholder=stream_placeholder)
-    return call_openai_for_agent(role_prompt, speaker, stream_placeholder=stream_placeholder)
-
-
 def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placeholder=None) -> None:
     """If this agent's thinking flag is set, call OpenAI, log request/response, persist reply, clear flag, advance pending mentions if any, then maybe trigger other agent (@mention or probability), then rerun."""
     if not st.session_state.get(f"{agent_key}_thinking", False):
@@ -955,7 +629,12 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
             return
     _reflection_mode = bool(st.session_state.get("reflection_mode_until") and time.time() < float(st.session_state.get("reflection_mode_until")))
     with st.spinner(f"{agent_name} thinking…"):
-        reply, messages = call_model_for_agent(_get_agent_role(agent_key, _get_moderator_display_name(), reflection_mode=_reflection_mode), agent_key, stream_placeholder=stream_placeholder)
+        reply, messages = call_model_for_agent(
+            _get_agent_role(agent_key, _get_moderator_display_name(), reflection_mode=_reflection_mode),
+            agent_key,
+            stream_placeholder=stream_placeholder,
+            build_messages_for_agent=_build_messages_for_model,
+        )
     _log_openai_request(agent_key, messages, reply)
     reply = _strip_agent_name_prefix(reply, agent_name)
     _ts = datetime.now(_UTC)
@@ -1061,16 +740,7 @@ def main():
     st.title(f"{_mod_name}'s Open Dialogue with AI")
 
     # Tavily caption only after name is set (not on the name-entry page)
-    _tavily = _get_tavily_client()
-    _tavily_key_set = bool(os.environ.get("TAVILY_API_KEY"))
-    if _tavily:
-        st.caption("Tavily (web search): enabled — agents can look up current information.")
-    elif _tavily_key_set and _tavily_error:
-        st.caption(f"Tavily (web search): disabled — key set but client failed: {_tavily_error}")
-    elif _tavily_key_set:
-        st.caption("Tavily (web search): disabled — key set but client failed. Check that tavily-python is installed.")
-    else:
-        st.caption("Tavily (web search): disabled — TAVILY_API_KEY not in environment. Add it to .env next to app.py (or run from project root).")
+    st.caption(get_tavily_status())
 
     # CSS: force thinking spinner left-aligned; prevent button text wrapping (e.g. Respond)
     st.markdown(

@@ -306,7 +306,7 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
         f"You can ask questions to the other participants in the conversation - the Moderators or {other}, and you can reflect on what they said. "
         f"When answering questions from or reflecting on ideas, thoughts, or messages of other participants in the conversation - "
         f"you must not get confused as to who said what and be able to reference the right person/participant in the conversation. "
-        f"Be creative in your responses, don't just echo what others have said. Respond with your own unique perspective and ideas. "
+        f"Be creative in your responses, don't just parrot what others have said. Respond with your own unique perspective and ideas. "
         f"Take a different perspective from the other {other}, when relevant: add a distinct angle, disagree where you genuinely do, "
         f"or emphasize different aspects; do not simply rephrase or echo what others said. "
         f"Do not tell other participants what they should do, unless specifically instructed to do so. "
@@ -330,7 +330,7 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
             f"\n\n"
             f"REFLECTION PHASE: You are now in a short reflection phase with {other}. "
             f"Reflect on what all the participants said so far in the conversation and respond thoughtfully; {other} will then do the same. "
-            f"Keep your reply focused on reflecting on the discussion and your own role in the conversation. "
+            f"Keep your reply focused on reflecting on the discussion and your own role in the conversation. Do not parrot, simply repeating or rephrasing what others said. "
         )
     return base
 

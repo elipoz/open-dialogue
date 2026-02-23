@@ -41,13 +41,16 @@ def create_conversation() -> str:
 
 
 def list_conversations(limit: int = 50) -> list[dict]:
-    """Return list of {id, created_at} sorted by created_at desc."""
+    """Return list of {id, created_at} sorted by created_at desc. created_at is normalized to timezone-aware UTC."""
     sb = get_supabase()
     if not sb:
         return []
     try:
         r = sb.table("od_conversations").select("id, created_at").order("created_at", desc=True).limit(limit).execute()
-        return [{"id": row["id"], "created_at": row["created_at"]} for row in (r.data or [])]
+        return [
+            {"id": row["id"], "created_at": _sanitize_timestamp(row.get("created_at"))}
+            for row in (r.data or [])
+        ]
     except Exception:
         return []
 

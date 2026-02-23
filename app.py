@@ -693,6 +693,42 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
     st.rerun()
 
 
+def _clear_pending_delete():
+    st.session_state.pending_delete_conv_id = None
+    st.session_state.pending_delete_current = False
+
+
+@st.dialog("Delete conversation", on_dismiss=_clear_pending_delete)
+def _confirm_delete_conversation_dialog():
+    """Pop-up confirmation for deleting a conversation. Reads pending_delete_conv_id from session state."""
+    st.warning("Delete this conversation? This cannot be undone.")
+    cid = st.session_state.get("pending_delete_conv_id")
+    is_current = st.session_state.get("pending_delete_current", False)
+    if cid and get_supabase():
+        with st.expander("Conversation history", expanded=False):
+            messages = load_messages(cid)
+            for author, content, dt in reversed(messages):
+                ts_str = _format_in_pst(dt, "%Y-%m-%d %H:%M")
+                preview = (content[:200] + "…") if len(content) > 200 else content
+                st.text(f"{ts_str} · {author}: {preview}")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Confirm delete", type="primary", key="dialog_confirm_delete"):
+            if cid and delete_conversation(cid):
+                _clear_conversation_state(clear_query_params=is_current)
+                if is_current:
+                    new_id = create_conversation()
+                    if new_id:
+                        st.session_state.conversation_id = new_id
+                        st.query_params["conversation_id"] = new_id
+            _clear_pending_delete()
+            st.rerun()
+    with col2:
+        if st.button("Cancel", key="dialog_cancel_delete"):
+            _clear_pending_delete()
+            st.rerun()
+
+
 def main():
     st.set_page_config(page_title="Open Dialogue with AI", page_icon="💬", layout="wide")
 
@@ -768,7 +804,10 @@ def main():
     # Sidebar: previous conversations and New conversation
     with st.sidebar:
         st.subheader("Conversations")
-        if st.button("New conversation", key="sidebar_new_conversation", use_container_width=True):
+        _pending_del = st.session_state.get("pending_delete_conv_id")
+        if _pending_del:
+            _confirm_delete_conversation_dialog()
+        if st.button("New conversation", key="sidebar_new_conversation", use_container_width=True, disabled=bool(_pending_del)):
             new_id = create_conversation()
             if new_id:
                 # Prepend new conversation to sidebar list so it shows immediately (avoid duplicate id in list)
@@ -813,14 +852,9 @@ def main():
                 with del_col:
                     can_delete = _get_moderator_display_name().strip().lower() == "admin"
                     if st.button("×", key=f"del_{cid}", help="Delete conversation", disabled=not can_delete):
-                        if delete_conversation(cid):
-                            _clear_conversation_state(clear_query_params=(cid == current_id))
-                            if cid == current_id:
-                                new_id = create_conversation()
-                                if new_id:
-                                    st.session_state.conversation_id = new_id
-                                    st.query_params["conversation_id"] = new_id
-                            st.rerun()
+                        st.session_state.pending_delete_conv_id = cid
+                        st.session_state.pending_delete_current = cid == current_id
+                        st.rerun()
             if not conv_list and get_supabase():
                 st.caption("No conversations yet.")
             elif not get_supabase():

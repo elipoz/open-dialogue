@@ -710,7 +710,7 @@ def _confirm_delete_conversation_dialog():
             for author, content, dt in reversed(messages):
                 ts_str = _format_in_pst(dt, "%Y-%m-%d %H:%M")
                 preview = (content[:200] + "…") if len(content) > 200 else content
-                st.text(f"{ts_str} · {author}: {preview}")
+                st.text(f"{ts_str} {author}: {preview}")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Confirm delete", type="primary", key="dialog_confirm_delete"):

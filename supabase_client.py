@@ -53,6 +53,26 @@ def list_conversations(limit: int = 50) -> list[dict]:
         return []
 
 
+def _parse_message_row(row: dict) -> tuple:
+    """Parse a single od_messages row to (role, message, dt)."""
+    ts = row.get("created_at")
+    if ts:
+        try:
+            if hasattr(ts, "isoformat"):
+                dt = ts
+            else:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if getattr(dt, "tzinfo", None) is None:
+                dt = dt.replace(tzinfo=_UTC)
+            else:
+                dt = dt.astimezone(_UTC)
+        except Exception:
+            dt = datetime.now(_UTC)
+    else:
+        dt = datetime.now(_UTC)
+    return (row.get("role", ""), row.get("message", ""), dt)
+
+
 def load_messages(conversation_id: str) -> list[tuple]:
     """Return list of (author_display_name, message, datetime) in chronological order. role column stores the display name of who posted."""
     sb = get_supabase()
@@ -60,26 +80,28 @@ def load_messages(conversation_id: str) -> list[tuple]:
         return []
     try:
         r = sb.table("od_messages").select("created_at, role, message").eq("conversation_id", conversation_id).order("created_at").execute()
-        out = []
-        for row in (r.data or []):
-            ts = row.get("created_at")
-            if ts:
-                try:
-                    if hasattr(ts, "isoformat"):
-                        dt = ts
-                    else:
-                        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                    # Normalize to UTC so display is correct regardless of DB/client timezone
-                    if getattr(dt, "tzinfo", None) is None:
-                        dt = dt.replace(tzinfo=_UTC)
-                    else:
-                        dt = dt.astimezone(_UTC)
-                except Exception:
-                    dt = datetime.now(_UTC)
-            else:
-                dt = datetime.now(_UTC)
-            out.append((row.get("role", ""), row.get("message", ""), dt))
-        return out
+        return [_parse_message_row(row) for row in (r.data or [])]
+    except Exception:
+        return []
+
+
+def load_messages_since(conversation_id: str, after_created_at: datetime) -> list[tuple]:
+    """Return list of (author_display_name, message, datetime) for messages with created_at > after_created_at, in chronological order.
+    Use for incremental reload; after_created_at should be UTC."""
+    sb = get_supabase()
+    if not sb or not conversation_id:
+        return []
+    try:
+        ts_str = after_created_at.astimezone(_UTC).isoformat()
+        r = (
+            sb.table("od_messages")
+            .select("created_at, role, message")
+            .eq("conversation_id", conversation_id)
+            .gt("created_at", ts_str)
+            .order("created_at")
+            .execute()
+        )
+        return [_parse_message_row(row) for row in (r.data or [])]
     except Exception:
         return []
 

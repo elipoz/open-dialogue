@@ -26,6 +26,7 @@ from supabase_client import (
     get_supabase,
     list_conversations,
     load_messages,
+    load_messages_since,
     persist_message,
 )
 
@@ -901,15 +902,23 @@ def main():
             if not conversation_exists(conv_id):
                 _clear_conversation_state(clear_query_params=True)
                 st.rerun()
-            # Only update dialogue when it actually changed to reduce blink/focus reset from redundant redraws
-            loaded = load_messages(conv_id)
-            new_dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
             current = st.session_state.get("dialogue") or []
-            if not _dialogue_equals(current, new_dialogue):
-                st.session_state.dialogue = new_dialogue
+            loaded_conv = st.session_state.get("loaded_conversation_id")
+            # Incremental load when we already have this conversation in session (avoid full load every 2s)
+            if loaded_conv == conv_id and current and len(current[-1]) >= 3:
+                last_ts = current[-1][2]
+                new_rows = load_messages_since(conv_id, last_ts)
+                if new_rows:
+                    new_entries = [(_author_display_name_to_party(a), m, t, a) for a, m, t in new_rows]
+                    st.session_state.dialogue = current + new_entries
+            else:
+                # First load for this conversation or no last timestamp: full load
+                loaded = load_messages(conv_id)
+                new_dialogue = [(_author_display_name_to_party(a), m, t, a) for a, m, t in loaded]
+                if not _dialogue_equals(current, new_dialogue):
+                    st.session_state.dialogue = new_dialogue
                 st.session_state.loaded_conversation_id = conv_id
-            # Always sync intro flags from loaded history so agents don't re-introduce (e.g. after another user's message)
-            _sync_agent_intro_state_from_dialogue(new_dialogue)
+            _sync_agent_intro_state_from_dialogue(st.session_state.dialogue)
         SPEAKER_LABELS = {
             ROLE_INSTRUCTOR: "Instructor",
             ROLE_MODERATOR: _get_moderator_display_name(),

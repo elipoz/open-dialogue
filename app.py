@@ -547,10 +547,9 @@ def _render_agent_role_row(agent_key: str, agent_name: str, agent_role: str, rol
                     st.session_state[f"{agent_key}_role"] = new_role
                     st.session_state[f"{agent_key}_needs_intro"] = True
                     st.session_state.agent_chain_count = 0  # human action resets agent chain
-                    _ts = datetime.now(_UTC)
                     msg = f"Updated {agent_name}'s role:\n\n{new_role}"
-                    st.session_state.dialogue.append((ROLE_INSTRUCTOR, msg, _ts))
-                    persist_message(st.session_state.get("conversation_id") or "", _speaker_label(ROLE_INSTRUCTOR), msg, _ts)
+                    st.session_state.dialogue.append((ROLE_INSTRUCTOR, msg, datetime.now(_UTC)))
+                    persist_message(st.session_state.get("conversation_id") or "", _speaker_label(ROLE_INSTRUCTOR), msg)
                     _reload_dialogue_from_db()
                     st.rerun()
     with button_col:
@@ -612,7 +611,7 @@ def _truncate_middle(text: str, max_len: int) -> str:
 def _log_openai_request(speaker: str, messages: list, response_text: str) -> None:
     """Store the latest request/response only (overwrites previous). Use ISO ts for session state. Long content is middle-truncated so start and end are visible."""
     sanitized = [{"role": m.get("role"), "content": _truncate_middle((m.get("content") or ""), 2000)} for m in messages]
-    now = datetime.now(ZoneInfo("UTC"))
+    now = datetime.now(_UTC)
     st.session_state.openai_request_log = {
         "agent": speaker,
         "messages": sanitized,
@@ -646,9 +645,8 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
         )
     _log_openai_request(agent_key, messages, reply)
     reply = _strip_agent_name_prefix(reply, agent_name)
-    _ts = datetime.now(_UTC)
-    st.session_state.dialogue.append((agent_key, reply, _ts))
-    persist_message(st.session_state.get("conversation_id") or "", _speaker_label(agent_key), reply, _ts)
+    st.session_state.dialogue.append((agent_key, reply, datetime.now(_UTC)))
+    persist_message(st.session_state.get("conversation_id") or "", _speaker_label(agent_key), reply)
     _reload_dialogue_from_db()
     st.session_state[f"{agent_key}_thinking"] = False
     st.session_state[f"{agent_key}_needs_intro"] = False
@@ -1062,9 +1060,8 @@ def main():
             text = human_prompt.strip()
             if text:
                 text_for_history = _expand_mentions_to_names(text)  # @g / @ j -> real names in history and for OpenAI
-                _ts = datetime.now(_UTC)
-                st.session_state.dialogue.append((role, text_for_history, _ts))
-                persist_message(st.session_state.get("conversation_id") or "", _speaker_label(role), text_for_history, _ts)
+                st.session_state.dialogue.append((role, text_for_history, datetime.now(_UTC)))
+                persist_message(st.session_state.get("conversation_id") or "", _speaker_label(role), text_for_history)
                 _reload_dialogue_from_db()
                 # Clear agent thinking on every new message; then set from @mention when Moderator posts
                 st.session_state.agent1_thinking = False
@@ -1102,7 +1099,7 @@ def _format_in_pst(dt, fmt: str = "%Y-%m-%d %H:%M") -> str:
             except ValueError:
                 return (dt or "")[:19].replace("T", " ")
         if hasattr(dt, "tzinfo") and dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+            dt = dt.replace(tzinfo=_UTC)
         return dt.astimezone(_PST).strftime(fmt)
     except Exception:
         return (str(dt) if dt else "")[:19].replace("T", " ")

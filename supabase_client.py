@@ -28,14 +28,13 @@ def get_supabase():
 
 
 def create_conversation() -> str:
-    """Insert a new row in od_conversations and return its id (UUID string). Fetches current time so created_at is accurate."""
+    """Insert a new row in od_conversations and return its id (UUID string). DB sets created_at via default now()."""
     sb = get_supabase()
     if not sb:
         return ""
     conv_id = str(uuid_lib.uuid4())
-    now_utc = datetime.now(_UTC).isoformat()
     try:
-        sb.table("od_conversations").insert({"id": conv_id, "created_at": now_utc}).execute()
+        sb.table("od_conversations").insert({"id": conv_id}).execute()
         return conv_id
     except Exception:
         return ""
@@ -53,23 +52,27 @@ def list_conversations(limit: int = 50) -> list[dict]:
         return []
 
 
+def _sanitize_timestamp(ts: object) -> datetime:
+    """Normalize a DB created_at value to timezone-aware UTC datetime. Handles datetime, ISO string, or None."""
+    if ts is None:
+        return datetime.now(_UTC)
+    try:
+        if hasattr(ts, "isoformat"):
+            dt = ts
+        else:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if getattr(dt, "tzinfo", None) is None:
+            dt = dt.replace(tzinfo=_UTC)
+        else:
+            dt = dt.astimezone(_UTC)
+        return dt
+    except Exception:
+        return datetime.now(_UTC)
+
+
 def _parse_message_row(row: dict) -> tuple:
     """Parse a single od_messages row to (role, message, dt)."""
-    ts = row.get("created_at")
-    if ts:
-        try:
-            if hasattr(ts, "isoformat"):
-                dt = ts
-            else:
-                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-            if getattr(dt, "tzinfo", None) is None:
-                dt = dt.replace(tzinfo=_UTC)
-            else:
-                dt = dt.astimezone(_UTC)
-        except Exception:
-            dt = datetime.now(_UTC)
-    else:
-        dt = datetime.now(_UTC)
+    dt = _sanitize_timestamp(row.get("created_at"))
     return (row.get("role", ""), row.get("message", ""), dt)
 
 
@@ -130,10 +133,9 @@ def delete_conversation(conversation_id: str) -> bool:
         return False
 
 
-def persist_message(conversation_id: str, author_display_name: str, message: str, created_at: datetime | None = None) -> None:
+def persist_message(conversation_id: str, author_display_name: str, message: str) -> None:
     """Insert one message into od_messages. role column = author_display_name (human or agent name).
-       Uses DB server now() for created_at so timestamps are correct even if the app host clock is wrong (e.g. stuck at process start).
-       No-op if Supabase unavailable."""
+       DB sets created_at via default now(). No-op if Supabase unavailable."""
     sb = get_supabase()
     if not sb or not conversation_id:
         return

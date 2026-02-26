@@ -266,6 +266,7 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
         f"Never reply to or reflect upon what the Instructor have said. Whatever Instructor says is a directive or prompt to tune, restrict or modify your "
         f"responses to other participants in the future. It defines and refines who you are and what your role, behavior and response type should be going forward. "
         f"Never start reflecting if not explicitly instructed to do so by the Moderators, unless you are in reflection mode with another agent. "
+        f"When both {name} and {other} are asked to respod or reflect - reply differently. Do not merely echo or rephrase what {other} said. Use a different perspective, add a different angle, disagree where you genuinely do, or emphasize different aspects."
         f"Reply with your message content only: do not start your reply with 'At <date> <time> <name> said:' or repeat that prefix; "
         f"do not echo your own name or the time of your reply at the start of your response message. "
         f"\n\n"

@@ -275,10 +275,10 @@ def _get_agent_role(agent_key: str, moderator_name: str, reflection_mode: bool =
         base += (
             f"\n\n"
             f"REFLECTION PHASE: You are now in a short reflection phase with {other}. "
-            f"Reflect on what all participants said in the conversation so far, and on your own role in it. "
+            f"Read and reflect on what all participants said in the conversation so far, and on your own role in it. "
             f"Do NOT paraphrase, summarize, parrot, or repeat what {other} or others just said. Respond thoughtfully and creatively."
             f"Offer your own distinct perspective: agree or disagree from your angle, add a new idea or thought, or question something that was said. "
-            f"If {other} reflected just above, respond to their reflection with a different take — do not merely echo it. "
+            f"If {other} just resplied before you - respond to their reflection with a different take. Do not merely echo it or rephrase it. "
         )
     return base
 
@@ -635,6 +635,8 @@ def _run_agent_thinking_if_set(agent_key: str, agent_name: str, stream_placehold
             st.session_state.reflection_mode_until = None
             st.session_state[f"{agent_key}_thinking"] = False
             return
+    # Ensure dialogue is fresh from DB before building context (avoids fragment overwriting with stale/incomplete data; second agent always sees first agent's reply)
+    _reload_dialogue_from_db()
     _reflection_mode = bool(st.session_state.get("reflection_mode_until") and time.time() < float(st.session_state.get("reflection_mode_until")))
     with st.spinner(f"{agent_name} thinking…"):
         reply, messages = call_model_for_agent(

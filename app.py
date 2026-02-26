@@ -783,7 +783,7 @@ def main():
     st.title(f"{_mod_name}'s Open Dialogue with AI")
 
     # Model and Tavily status
-    st.caption(get_model_status())
+    st.caption(get_model_status(AGENT_1_NAME, AGENT_2_NAME))
     st.caption(get_tavily_status())
 
     # CSS: force thinking spinner left-aligned; prevent button text wrapping (e.g. Respond)

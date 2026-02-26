@@ -169,11 +169,14 @@ def _get_gemini_temperature() -> Optional[float]:
         return 1.0
 
 
-def get_model_status() -> str:
-    """Return the model status for the UI, e.g. 'Agent 1: OpenAI / gpt-5-mini · Agent 2: Gemini / gemini-2.0-flash'."""
+def get_model_status(agent1_name: str | None = None, agent2_name: str | None = None) -> str:
+    """Return the model status for the UI, e.g. 'Gosha: OpenAI / gpt-5-mini · Joshi: Gemini / gemini-2.0-flash'.
+    If names are not provided, uses 'Agent 1' and 'Agent 2'."""
+    n1 = agent1_name or "Agent 1"
+    n2 = agent2_name or "Agent 2"
     s1 = f"Gemini / {_get_gemini_model()}" if _use_gemini_for_agent("agent1") else f"OpenAI / {_get_openai_model()}"
     s2 = f"Gemini / {_get_gemini_model()}" if _use_gemini_for_agent("agent2") else f"OpenAI / {_get_openai_model()}"
-    return f"Agent 1: {s1} · Agent 2: {s2}"
+    return f"{n1}: {s1} · {n2}: {s2}"
 
 
 def _openai_messages_to_gemini_contents(messages: list) -> tuple[list, Optional[str]]:
